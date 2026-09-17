@@ -21,6 +21,7 @@ const MAX_ANNOUNCE_SECONDS = 30;
 const MIN_SCREENSHOT_BYTES = 1024;
 const MAX_COORDINATE = 32767;
 const ONE_SHOT_FLAGS = { '--stop': 'stop', '--restore-cursor': 'restore-cursor' };
+const OVERLAY_FLAGS = ['--quiet', '--hide-cursor'];
 const CLICK_MODES = ['left', 'right', 'double'];
 const KEY_PHASES = ['', 'down', 'up'];
 const CLIPBOARD_ACTIONS = ['get', 'set', 'clear'];
@@ -169,7 +170,7 @@ function parseOverlayFlags(args) {
       }
       continue;
     }
-    if (argument !== '--quiet' && !(argument in ONE_SHOT_FLAGS)) {
+    if (!OVERLAY_FLAGS.includes(argument) && !(argument in ONE_SHOT_FLAGS)) {
       throw new ToolError(`unknown overlay flag "${argument}"`);
     }
     flags.add(argument);
@@ -182,6 +183,7 @@ function parseOverlayFlags(args) {
   return {
     announce,
     quiet: flags.has('--quiet'),
+    hideCursor: flags.has('--hide-cursor'),
     oneShot: oneShotFlags.length === 1 ? ONE_SHOT_FLAGS[oneShotFlags[0]] : null,
   };
 }
@@ -192,7 +194,10 @@ async function runOverlay(args) {
     console.log(ps(['overlay', options.oneShot]));
     return;
   }
-  const extra = options.quiet ? ['-Quiet'] : [];
+  const extra = [
+    ...(options.quiet ? ['-Quiet'] : []),
+    ...(options.hideCursor ? ['-HideCursor'] : []),
+  ];
   const state = ps(['overlay-start', '-Announce', String(options.announce), ...extra]);
   if (!state.includes('RUNNING')) throw new ToolError('the indicator did not come up — refusing to start input without it');
 
@@ -224,9 +229,15 @@ function runDoctor() {
 }
 
 function describeCursor() {
-  if (cursorMayBeHidden()) return 'HIDDEN until restored — run "dsh-cu overlay --restore-cursor"';
+  if (cursorMayBeHidden()) {
+    return indicatorIsUp()
+      ? 'replaced by the marker (--hide-cursor)'
+      : 'HIDDEN — the next command repairs it, or run "dsh-cu overlay --restore-cursor"';
+  }
   try {
-    return ps(['cursor-state']).includes('CURSOR_HIDDEN') ? 'HIDDEN — run "dsh-cu overlay --restore-cursor"' : 'visible';
+    const state = ps(['cursor-state']);
+    if (state.includes('CURSOR_HIDDEN_BY_OTHER')) return 'hidden, but not by this tool (another program holds the pointer)';
+    return 'visible';
   } catch {
     return 'unknown';
   }
@@ -268,7 +279,7 @@ export const COMMANDS = [
   { name: 'wait-window', args: '<text> [seconds]', summary: 'wait for a window to appear, then focus it', run: runWaitWindow },
   { name: 'run', args: '<command line>', summary: 'run a command line (elevated when the broker is up)', gated: true, run: runRun },
   { name: 'broker', args: '[start|stop|status]', summary: 'elevated input broker, asks for UAC', run: runBroker },
-  { name: 'overlay', args: '[--announce N] [--quiet]', summary: 'on-screen indicator, ESC stops it', run: runOverlay },
+  { name: 'overlay', args: '[--announce N] [--quiet] [--hide-cursor]', summary: 'on-screen indicator, ESC stops it; --hide-cursor makes the marker replace the pointer', run: runOverlay },
   { name: 'overlay-state', args: '', summary: 'whether the indicator is running', run: async () => console.log(ps(['overlay-state'])) },
   { name: 'display', args: '', summary: 'primary screen size and DPI', run: async () => console.log(ps(['display'])) },
   { name: 'doctor', args: '', summary: 'what this machine can do', windowsOnly: false, run: runDoctor },

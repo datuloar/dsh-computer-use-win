@@ -27,7 +27,7 @@ public class Indicator : ApplicationContext
     private bool _touchSeen;
     private int _heartbeatTicks;
 
-    public Indicator(bool quiet, int announceSeconds)
+    public Indicator(bool quiet, int announceSeconds, bool hideCursor)
     {
         _quiet = quiet;
         _announceSeconds = announceSeconds;
@@ -37,6 +37,7 @@ public class Indicator : ApplicationContext
 
         StateFiles.Write(StateFiles.Touch, DateTime.UtcNow.ToString("O"));
         StateFiles.Write(StateFiles.Pid, Process.GetCurrentProcess().Id + " " + StartTicks());
+        if (hideCursor) SystemCursors.Hide();
 
         Rectangle screen = Screen.PrimaryScreen.Bounds;
         if (!_quiet) ShowChrome(screen);

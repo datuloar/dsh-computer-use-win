@@ -65,6 +65,11 @@ public static class Native
 
     public const int CursorShowing = 0x00000001;
 
+    public static readonly uint[] StandardCursorIds = new uint[]
+    {
+        32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32650, 32651,
+    };
+
     public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -185,6 +190,9 @@ public static class Native
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorInfo(ref CURSORINFO info);
+
+    [DllImport("user32.dll")]
+    public static extern int ShowCursor(bool show);
 
     public static bool CursorIsShowing()
     {

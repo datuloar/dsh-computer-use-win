@@ -88,7 +88,7 @@ dsh-cu overlay --stop                # stop and clean up
     dsh-cu wait-window <text> [seconds]       wait for a window to appear, then focus it
     dsh-cu run <command line>                 run a command line — see the safety rules
     dsh-cu broker [start|stop|status]         elevated input broker, asks for UAC
-    dsh-cu overlay [--announce N] [--quiet]   on-screen indicator, ESC stops it
+    dsh-cu overlay [--announce N] [--quiet] [--hide-cursor]   on-screen indicator, ESC stops it
     dsh-cu overlay-state                      whether the indicator is running
     dsh-cu display                            primary screen size and DPI
     dsh-cu doctor                             what this machine can do
@@ -114,11 +114,11 @@ focused page. Every scroll moves the coordinates you measured — take a fresh s
 - **ESC stops it** — a physical press only; injected ESC is ignored.
 - **`overlay --stop`** kills the indicator by pid file, reloads the system cursors and removes its
   state files. The indicator also stops itself after five minutes without a command.
-- **The tool never hides your pointer.** The animated marker is drawn *next to* the real cursor, so
-  killing the indicator — which no cleanup code can survive — cannot leave you without a pointer.
-  `dsh-cu overlay --restore-cursor` reloads the system cursors anyway (safe to run any time) and is
-  what repairs a machine left in the old state by version 1.1.0; `dsh-cu doctor` reports whether the
-  pointer is showing.
+- **One pointer, or two.** By default your own cursor stays visible and the marker is drawn next to
+  it. `dsh-cu overlay --hide-cursor` blanks the system cursor so the animated marker is the only
+  pointer on screen; the tool records that it did, `overlay --stop` gives the pointer back, and if
+  the indicator is killed the next `dsh-cu` command restores it and says so. `dsh-cu doctor` reports
+  `cursor: visible` / `replaced by the marker` / `hidden, but not by this tool`.
 - **`run` and `broker start` are the escape hatches.** `broker start` raises a UAC prompt and lets
   `run` execute a command line elevated, for windows this process cannot reach (UIPI). Both are
   gated behind the indicator and are meant for explicit human requests — the Harness already has a

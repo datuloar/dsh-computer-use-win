@@ -87,6 +87,7 @@ export async function runSelfTest({ root, cli, exec }) {
     assert(elapsed >= announce, `returned after ${elapsed.toFixed(1)}s, before the ${announce}s announcement`);
     assert(backendCall(['overlay-state']).includes('RUNNING'), 'the indicator is not running after start');
     assert(cliCall(['overlay-state']).includes('RUNNING'), 'the CLI cannot see the running indicator');
+    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the default overlay must not touch the pointer');
     return `frame up, announced ${elapsed.toFixed(1)}s`;
   });
 
@@ -158,13 +159,22 @@ export async function runSelfTest({ root, cli, exec }) {
     while (Date.now() < deadline && !backendCall(['overlay-state']).includes('STOPPED')) await sleep(200);
     assert(backendCall(['overlay-state']).includes('STOPPED'), 'indicator still alive');
     assert(!existsSync(aliveFile) && !existsSync(pidFile) && !existsSync(cursorMarker), 'state files were left behind');
-    assert(backendCall(['cursor-state']).includes('CURSOR_VISIBLE'), 'the pointer is not visible after a stop');
+    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer is still replaced after a stop');
     return 'process, cursor and files clean';
   });
 
   await check('cursor rescue works', () => {
     assert(cliCall(['overlay', '--restore-cursor']).includes('CURSOR_RESTORED'), 'cursor was not restored');
     return 'CURSOR_RESTORED';
+  });
+
+  await check('overlay --hide-cursor replaces the pointer and gives it back', () => {
+    cliCall(['overlay', '--stop']);
+    cliCall(['overlay', '--announce', '0', '--hide-cursor']);
+    assert(backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer was not replaced');
+    assert(cliCall(['overlay', '--stop']).includes('STOPPED'), 'stop did not confirm');
+    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer was not given back');
+    return 'replaced while up, given back on stop';
   });
 
   await check('a killed indicator refuses input at once and leaves the pointer alone', () => {
@@ -182,7 +192,7 @@ export async function runSelfTest({ root, cli, exec }) {
       /indicator is not running/.test(refusal),
       `expected a refusal right after the kill, got: ${refusal.trim() || 'no output'}`,
     );
-    assert(backendCall(['cursor-state']).includes('CURSOR_VISIBLE'), 'the pointer did not survive the kill');
+    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer was left replaced by the kill');
     return 'refused immediately, pointer untouched';
   });
 

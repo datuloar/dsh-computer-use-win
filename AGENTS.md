@@ -84,17 +84,21 @@ npm run doctor      # what this machine can do
   live in `Interop.cs`; every other file only opens `namespace DshCu`.
 - **State files are the CLI ↔ indicator contract**, all in `%TEMP%`: `dsh-cu.alive` (heartbeat),
   `dsh-cu.pid` (pid plus start ticks), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
-  `dsh-cu.cursor` (only ever written by version 1.1.0, read to heal its leftover state),
+  `dsh-cu.cursor` (present while `--hide-cursor` holds the pointer; the CLI heals leftover state),
   `dsh-cu.broker.ready|stop|req.*|res.*`. Both sides treat a heartbeat older than 5 s as "gone"; an
   indicator that never sees a touch file stops itself after the same five minutes, so a broken
   watchdog cannot leave one running forever.
-- **Never blank or replace the system cursor.** Version 1.1.0 hid it with `SetSystemCursor`; when
-  the process was killed, Windows kept the blank cursors and even `SPI_SETCURSORS` did not always
-  bring the pointer back — the user lost their mouse pointer twice, with no way to tell from the
-  process that it was gone. The marker is drawn next to the real cursor instead.
-  `SystemCursors.Restore()` remains only as a healer for machines left in that state (it deletes
-  `dsh-cu.cursor` and reloads the cursors), `doctor` reports `cursor-state`, and the self-test
-  asserts the pointer is showing after a stop and after a killed indicator.
+- **Cursor hiding is opt-in and always recoverable.** `overlay --hide-cursor` blanks the system
+  cursors with `SetSystemCursor` (the only API that hides the pointer for the whole desktop —
+  `ShowCursor` from a background process does nothing, verified); a bare `overlay` leaves the
+  pointer alone. Whenever cursors are blanked, `StateFiles.CursorHidden` records it, every stop path
+  restores them, and `cli.js` repairs a stranded pointer on the next command because a killed
+  process cannot clean up after itself. Version 1.1.0 hid the pointer unconditionally and the user
+  lost it twice, so: never make this the default, never drop the marker, and keep the self-test
+  checks for `CURSOR_REPLACED` / "given back on stop" / "not left replaced by a kill".
+- **`cursor-state` reports our own state first.** `CURSOR_REPLACED` comes from the marker file;
+  `CURSOR_HIDDEN_BY_OTHER` means something else on the machine holds the pointer (the user runs
+  DinoRemote, which does the same trick) — do not "repair" that case, it is not ours.
 - **Do not solve captchas in a delivered feature.** The tool has no captcha solver and the skill
   says so; what an operator clicks on their own machine is their decision, not a product claim.
 

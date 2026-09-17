@@ -5,7 +5,8 @@ param(
     [Parameter(Position = 3)][string]$A3,
     [int]$Announce = 8,
     [switch]$Quiet,
-    [switch]$Horizontal
+    [switch]$Horizontal,
+    [switch]$HideCursor
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,7 @@ if ($env:DSH_CU_ARGV) {
             '^-Announce$' { $index++; $Announce = [int]$argv[$index] }
             '^-Quiet$' { $Quiet = $true }
             '^--horizontal$' { $Horizontal = $true }
+            '^-HideCursor$' { $HideCursor = $true }
             default { [void]$operands.Add($argument) }
         }
     }
@@ -44,6 +46,7 @@ $stopFile = Join-Path $env:TEMP 'dsh-cu.stop'
 $aliveFile = Join-Path $env:TEMP 'dsh-cu.alive'
 $pidFile = Join-Path $env:TEMP 'dsh-cu.pid'
 $touchFile = Join-Path $env:TEMP 'dsh-cu.touch'
+$cursorFile = Join-Path $env:TEMP 'dsh-cu.cursor'
 $brokerReady = Join-Path $env:TEMP 'dsh-cu.broker.ready'
 $brokerStop = Join-Path $env:TEMP 'dsh-cu.broker.stop'
 
@@ -283,6 +286,7 @@ switch ($Command) {
         Clear-Indicator
         $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'overlay', '-Announce', "$Announce")
         if ($Quiet) { $arguments += '-Quiet' }
+        if ($HideCursor) { $arguments += '-HideCursor' }
         Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden | Out-Null
         for ($attempt = 0; $attempt -lt 60; $attempt++) {
             Start-Sleep -Milliseconds 250
@@ -298,7 +302,9 @@ switch ($Command) {
         exit 0
     }
     'cursor-state' {
-        if ([DshCu.Native]::CursorIsShowing()) { Write-Output 'CURSOR_VISIBLE' } else { Write-Output 'CURSOR_HIDDEN' }
+        if (Test-Path $cursorFile) { Write-Output 'CURSOR_REPLACED' }
+        elseif ([DshCu.Native]::CursorIsShowing()) { Write-Output 'CURSOR_VISIBLE' }
+        else { Write-Output 'CURSOR_HIDDEN_BY_OTHER' }
     }
     'overlay' {
         if ($A1 -eq 'stop' -or $A1 -eq 'restore-cursor') {
@@ -309,7 +315,7 @@ switch ($Command) {
         }
         if (Test-Path $stopFile) { Remove-Item $stopFile -Force }
         Clear-Indicator
-        $context = New-Object DshCu.Indicator($Quiet, $Announce)
+        $context = New-Object DshCu.Indicator($Quiet, $Announce, [bool]$HideCursor)
         [System.Windows.Forms.Application]::Run($context)
         [DshCu.SystemCursors]::Restore() | Out-Null
         Write-Output 'OVERLAY_CLOSED'

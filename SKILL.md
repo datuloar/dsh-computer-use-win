@@ -23,9 +23,12 @@ Do not use it when reading files, running builds or tests can answer the questio
 
 ## The loop
 
-1. `dsh-cu overlay` first — the human gets an 8 s countdown and ESC cancels. Every
-   input command refuses to run until the indicator is up, and it refuses again the moment the
-   indicator process dies, so a killed indicator never leaves the human blind while you act.
+1. `dsh-cu overlay --hide-cursor` first — the human gets an 8 s countdown and ESC cancels, and the
+   animated marker replaces their pointer so there is exactly one pointer on screen. Without the
+   flag their own cursor stays visible next to the marker. Every input command refuses to run until
+   the indicator is up, and it refuses again the moment the indicator process dies, so a killed
+   indicator never leaves the human blind while you act. If the indicator is killed while it holds
+   the pointer, the next command gives it back and says so.
 2. `dsh-cu focus <pid>` (or `dsh-cu focus --title "part of the title"`) the target window.
 3. `dsh-cu shot` and look at the image.
 4. Act on coordinates taken from that screenshot; confirm a `move` with `dsh-cu pos`.
@@ -58,7 +61,7 @@ already-running `run` command line cannot be stopped by ESC.
     dsh-cu wait-window <text> [seconds]       wait for a window to appear, then focus it
     dsh-cu run <command line>                 run a command line — see the safety rules
     dsh-cu broker [start|stop|status]         elevated input broker, asks for UAC
-    dsh-cu overlay [--announce N] [--quiet]   on-screen indicator, ESC stops it
+    dsh-cu overlay [--announce N] [--quiet] [--hide-cursor]   on-screen indicator, ESC stops it
     dsh-cu overlay-state                      whether the indicator is running
     dsh-cu display                            primary screen size and DPI
     dsh-cu doctor                             what this machine can do
@@ -87,7 +90,8 @@ instead of reusing the old ones.
 - a panel at the top centre: "DeepSeek is controlling your computer" with the ESC hint;
 - during the announcement the same panel counts down and the frame pulses harder;
 - a soft blue frame around the whole screen edge;
-- your own pointer is never touched: it stays exactly where it is.
+- your pointer is replaced by the animated marker with `--hide-cursor`, or stays visible next to it
+  without the flag.
 
 The marker is a window, so it appears in your own screenshots — that is how you see where the
 pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
@@ -107,9 +111,9 @@ pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
 - `overlay --stop` is not optional: it kills the indicator, restores the cursor and removes its
   state files. `dsh-cu overlay-state` says whether it is still running. The indicator also stops
   itself after five minutes without a command from you.
-- The tool never hides or replaces your pointer: the animated marker is drawn next to it. Machines
-  left with an invisible cursor by version 1.1.0 are repaired by `dsh-cu overlay --restore-cursor`,
-  and `dsh-cu doctor` reports the state.
+- `--hide-cursor` blanks the system cursor so the marker is the only pointer. The tool records that
+  state, `overlay --stop` restores it, and if the indicator is killed the next `dsh-cu` command
+  restores it and reports that it did; `dsh-cu doctor` shows whether the pointer is replaced.
 
 ## Limits
 
