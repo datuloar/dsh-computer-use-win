@@ -1,7 +1,6 @@
 # dsh-computer-use
 
 [![CI](https://github.com/datuloar/dsh-computer-use-win/actions/workflows/ci.yml/badge.svg)](https://github.com/datuloar/dsh-computer-use-win/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/dsh-cu)](https://www.npmjs.com/package/dsh-cu)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![platform](https://img.shields.io/badge/platform-Windows-0078D6)
 
@@ -11,10 +10,10 @@ clipboard — plus an on-screen indicator the human can see and stop with **ESC*
 ![The indicator the human sees while an agent drives the machine](docs/indicator.png)
 
 Built for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness); the CLI works
-with any agent or script. The npm package is `dsh-cu`, the skill it registers is
-`dsh-computer-use`, and the repository is `dsh-computer-use-win` — three names, one thing.
+with any agent or script. The CLI is `dsh-cu`, the skill it registers is `dsh-computer-use`, the
+repository is `dsh-computer-use-win` — three names, one thing.
 
-**Nothing to install.** No npm dependencies, no driver, no SDK: the backend compiles its own C#
+**Nothing to install.** No packages, no driver, no SDK: the backend compiles its own C#
 with the .NET Framework that ships with Windows.
 
 ## Why this one
@@ -41,15 +40,14 @@ ground coordinates), no multi-monitor support, no browser DOM, and no per-applic
 
 | Way | Command | What you get |
 |---|---|---|
-| Skill + CLI | `powershell -ExecutionPolicy Bypass -File install.ps1` | `SKILL.md` in `$DSH_HOME\skills\dsh-computer-use\` and `dsh-cu` on PATH via `npm link` |
-| npm | `npm install -g dsh-cu` | the `dsh-cu` CLI only; copy `SKILL.md` yourself |
-| DSH profile plugin | `dsh plugin --profile web add dsh-cu` | the bundle mounts the plugin, which registers the skill from the package |
-| Straight from this repository | `dsh plugin --profile web add github:datuloar/dsh-computer-use-win` | same as above, before the npm release; no install scripts are run |
+| Skill + CLI + PATH | `powershell -ExecutionPolicy Bypass -File install.ps1` | `SKILL.md` in `$DSH_HOME\skills\dsh-computer-use\` and a `dsh-cu` shim on the user PATH |
+| DSH profile plugin | `dsh plugin --profile web add github:datuloar/dsh-computer-use-win` | the bundle mounts the plugin, which registers the skill from the repository |
+| Nothing at all | `bin\dsh-cu.cmd <command>` or `node src\cli.js <command>` from a clone | the same CLI, no PATH change |
 
 Use **one** skill delivery path: the copied `$DSH_HOME\skills\dsh-computer-use\SKILL.md` and the
 plugin registration carry the same skill name.
 
-Without any of them: `node src/cli.js <command>`.
+Without any of them: `node src\cli.js <command>` or `bin\dsh-cu.cmd <command>`.
 
 The filesystem skill root is scanned live, so no restart is needed for the copy; the profile
 plugin needs `dsh web` restarted once.
@@ -166,22 +164,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File backends\windows.ps1 shot C:
 | `the backend was stopped after 60s` | a modal dialog or a busy machine blocked the call | look at the screen, dismiss the dialog, retry |
 | `capture returned an empty image` | session locked or display asleep | unlock and retry |
 | `SendInput delivered 0 of 1 events` | the focused window is elevated | `dsh-cu broker start`, then retry |
-| The agent never sees the skill | `$DSH_HOME` is unset, or the skill frontmatter is invalid YAML | `dsh-cu doctor` reports the skill path; `npm run verify` validates the frontmatter |
+| The agent never sees the skill | `$DSH_HOME` is unset, or the skill frontmatter is invalid YAML | `dsh-cu doctor` reports the skill path; `node src\verify.js` validates the frontmatter |
 
 ## Development
 
 ```powershell
-npm run verify      # static: skill frontmatter, documented commands, plugin manifest
-npm test            # node:test suite for the pure parts (frontmatter, command table, contract)
-npm run check       # both of the above, what CI runs
-npm run self-test   # real machine: every command, ~40 s, takes over mouse and keyboard
-npm run doctor
+node src\verify.js           # static: skill frontmatter, documented commands, plugin manifest
+node test\run.mjs            # node:test suite for the pure parts (frontmatter, command table, contract)
+node src\cli.js self-test    # real machine: every command, ~40 s, takes over mouse and keyboard
+node src\cli.js doctor
 ```
 
-`verify` and `test` touch nothing, so a CI runner can execute them (see `.github/workflows/ci.yml`).
-`self-test` is the invasive one — run it on a desktop you are willing to hand over for a minute (it
-opens Notepad, types, clicks and closes Notepad again). From a sandboxed agent session Notepad
-cannot start, so those three checks report a warning instead of failing.
+`verify` and the test suite touch nothing, so a runner can execute them (see
+`.github/workflows/ci.yml`, which calls exactly these two). `self-test` is the invasive one — run it
+on a desktop you are willing to hand over for a minute (it opens Notepad, types, clicks and closes
+Notepad again). From a sandboxed agent session Notepad cannot start, so those three checks report a
+warning instead of failing.
 
 ```
 src/cli.js              entry point: argv -> one command call, one error path
@@ -202,35 +200,43 @@ AGENTS.md               index for a coding agent: layout, entry points, rules ea
 install.ps1             one-command install
 ```
 
-## Publishing to the plugin market
+## Getting it into the plugin market
 
 The market is the `dshmarket` plugin (Settings → **Plugin Market**); its catalog comes from
-[curated PRs](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin), and the install endpoint
-rejects anything that is not in that catalog. This repository is already shaped for it
-(`dsh.bundle.patch`, a Cordis plugin entry, the skill shipped in `files`, CI, `npm run check`), so
-the remaining steps are publishing, not code:
+[curated PRs](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin), and the catalog installs a
+plugin either from a package registry or straight from its GitHub repository — this one uses the
+repository, so there is nothing to publish first.
 
 | Step | State |
 |---|---|
-| GitHub repository | [datuloar/dsh-computer-use-win](https://github.com/datuloar/dsh-computer-use-win) — created, branch `main` |
-| npm name | `dsh-cu` — free at the time of writing; `dsh-computer-use` and `dsh-computer-use-win` are taken by other plugins |
-| `repository` field | set in `package.json`, so the catalog can map npm back to this repo |
-| Publish | `npm publish` (the package declares `publishConfig.access: public`) |
+| GitHub repository | [datuloar/dsh-computer-use-win](https://github.com/datuloar/dsh-computer-use-win) — public, branch `main` |
+| `dsh.bundle.patch` + plugin entry | in the repository, so the bundle mounts and registers the skill |
+| Install path | `dsh plugin --profile web add github:datuloar/dsh-computer-use-win` |
 | Repository metadata | add the `dsh-plugin` topic and a one-line description on GitHub |
-| Catalog PR | one file `data/plugins/<owner>__<repo>.yml` with `url`, `name`, `category: tools` and a bilingual `description` |
+| Catalog PR | one file `data/plugins/datuloar__dsh-computer-use-win.yml` with `url`, `name`, `category: tools` and a bilingual `description` |
+
+The catalog entry itself, ready to paste into that PR:
+
+```yaml
+url: https://github.com/datuloar/dsh-computer-use-win
+name: datuloar/dsh-computer-use-win
+category: tools
+description:
+  en: Windows computer use for DeepSeek Harness agents — screenshot, click, type, scroll and focus windows, with an on-screen indicator the human can see and stop with ESC. No dependencies and no driver to install.
+```
 
 CI in the catalog wants a `dsh.bundle`, real working code, a repository at least a day old and a
 description that matches the code. Optional but recommended: a `screenshots.json` next to
 `package.json` (1–8 GitHub-hosted images) so the card shows curated shots instead of scraping this
 README — `docs/indicator.png` is the one shot this repository ships.
 
-If the package is ever renamed, three places move together: `name` in `package.json`, the exported
-`name` in `lib/index.js`, and the `id`/`name` in `cordis.patch.yml`; the skill keeps its own name
-`dsh-computer-use`, which is what `$DSH_HOME\skills\` and the catalog show. `npm run verify` fails
-if they disagree.
+If the CLI is ever renamed, three places move together: `bin` in `package.json`, the exported `name`
+in `lib/index.js`, and the `id`/`name` in `cordis.patch.yml`; the skill keeps its own name
+`dsh-computer-use`, which is what `$DSH_HOME\skills\` and the catalog show. `node src\verify.js`
+fails if they disagree.
 
-Note that `os: ["win32"]` makes pnpm refuse the install on macOS and Linux, while the catalog has
-no Windows-only flag — the market will still show the card to everyone.
+Note that `os: ["win32"]` makes the package manager refuse the install on macOS and Linux, while the
+catalog has no Windows-only flag — the market will still show the card to everyone.
 
 ## License
 

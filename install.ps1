@@ -2,7 +2,7 @@
 param(
     [string]$DshHome = $env:DSH_HOME,
     [switch]$SkipSkill,
-    [switch]$SkipLink
+    [switch]$SkipPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,13 +25,20 @@ if (-not $SkipSkill) {
     }
 }
 
-if (-not $SkipLink) {
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        Say 'npm is not available: skipping the PATH link. Call the CLI as: node <repo>\src\cli.js'
+if (-not $SkipPath) {
+    $cli = Join-Path $here 'src\cli.js'
+    if (-not (Test-Path $cli)) { throw "src\cli.js is missing next to install.ps1 ($here)" }
+    $binDir = Join-Path $env:LOCALAPPDATA 'dsh-cu\bin'
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    Set-Content -Path (Join-Path $binDir 'dsh-cu.cmd') -Encoding ASCII -Value @('@echo off', "node `"$cli`" %*")
+    Say "CLI shim: $(Join-Path $binDir 'dsh-cu.cmd')"
+
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (($userPath -split ';') -notcontains $binDir) {
+        [Environment]::SetEnvironmentVariable('Path', (@($userPath.TrimEnd(';'), $binDir) | Where-Object { $_ }) -join ';', 'User')
+        Say "PATH updated for this user (open a new terminal to use it): $binDir"
     } else {
-        & npm link --silent 2>&1 | ForEach-Object { Say $_ }
-        if ($LASTEXITCODE -eq 0) { Say 'CLI linked: dsh-cu' }
-        else { Say 'npm link failed (a global prefix you cannot write to?): call the CLI as node <repo>\src\cli.js' }
+        Say "PATH already lists $binDir"
     }
 }
 

@@ -13,6 +13,6 @@ jobs:
         with:
           node-version: 22
       - name: Contract check
-        run: npm run verify
+        run: node src/verify.js
       - name: Unit tests
-        run: npm test
+        run: node test/run.mjs

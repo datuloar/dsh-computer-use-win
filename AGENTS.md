@@ -1,7 +1,8 @@
 # AGENTS.md — dsh-computer-use
 
 Windows computer use for the DeepSeek Harness: a CLI (`dsh-cu`), a PowerShell/C# backend, and a
-skill the agent reads. No npm dependencies, no driver to install.
+skill the agent reads. No dependencies to install, no driver, no package registry: the repository
+is the distribution.
 
 ## Where things live
 
@@ -11,7 +12,7 @@ skill the agent reads. No npm dependencies, no driver to install.
 | `src/commands.js` | the command table (name, args, summary, `gated`, handler) and `--help` |
 | `src/backend.js` | the only file that spawns a process, reads a temp path or knows the state files |
 | `src/contract.js` | static checks: skill frontmatter, documented commands, plugin manifest |
-| `src/verify.js` | `npm run verify` entry |
+| `src/verify.js` | the static contract check entry |
 | `src/selftest.js` | the invasive suite that drives the real machine |
 | `src/tool-error.js` | the error type whose message is meant for the operator |
 | `lib/index.js` | DSH plugin entry: registers the skill |
@@ -24,26 +25,31 @@ skill the agent reads. No npm dependencies, no driver to install.
 ## Commands
 
 ```powershell
-npm run verify      # static contract check, safe anywhere
-npm test            # node:test suite, in-process, no child processes
-npm run check       # both of the above
-npm run self-test   # drives the real mouse and keyboard for ~40 s
-npm run doctor      # what this machine can do
+node src\verify.js           # static contract check, safe anywhere
+node test\run.mjs            # node:test suite, in-process, no child processes
+node src\cli.js self-test    # drives the real mouse and keyboard for ~40 s
+node src\cli.js doctor       # what this machine can do
+bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change needed
 ```
 
 ## Rules that are easy to break
 
 - **No comments in code.** Not in `.js`, `.cs`, `.ps1` or the YAML. The reasons live here and in the
   README; when a rule needs explaining, add a line to this file instead of a comment.
-- **Three names, one thing.** The npm package is `dsh-cu`, the skill it registers is
-  `dsh-computer-use`, the repository is `dsh-computer-use-win`. Renaming the package means changing
-  `name` in `package.json`, the exported `name` in `lib/index.js` and the `id`/`name` in
+- **Three names, one thing.** The CLI and the `bin` name are `dsh-cu`, the skill it registers is
+  `dsh-computer-use`, the repository is `dsh-computer-use-win`. Renaming the CLI means changing
+  `bin` in `package.json`, the exported `name` in `lib/index.js` and the `id`/`name` in
   `cordis.patch.yml` together; the *skill* name stays `dsh-computer-use`, because
-  `$DSH_HOME\skills\dsh-computer-use\` and the agent catalog use it. `npm run verify` fails when
+  `$DSH_HOME\skills\dsh-computer-use\` and the agent catalog use it. `node src\verify.js` fails when
   they disagree.
+- **No package registry.** The repository is the distribution: `install.ps1` (skill copy plus a
+  `dsh-cu` shim under `%LOCALAPPDATA%\dsh-cu\bin` on the user PATH), `dsh plugin --profile web add
+  github:datuloar/dsh-computer-use-win`, or plain `node src\cli.js`. Do not reintroduce
+  npm/pnpm publishing instructions; `package.json` carries only what the DSH loader reads
+  (`dsh.bundle.patch`, `main`, `bin`, `files`, peer dependency).
 - **Two command lists would drift.** `src/commands.js` is the only one: `--help`, the dispatcher
   and the documentation check all read `COMMANDS`. Adding a command means one table entry plus a
-  line in `SKILL.md` and `README.md`; `npm run verify` fails until both mention it.
+  line in `SKILL.md` and `README.md`; `node src\verify.js` fails until both mention it.
 - **The gate is data, not a list in the entry point.** Set `gated: true` on a command that injects
   input or changes the machine; `cli.js` refuses to run it while the indicator is down. `broker` is
   the one command that gates inside its handler: `start` and `stop` change machine state, `status`
@@ -105,7 +111,9 @@ npm run doctor      # what this machine can do
 ## Environment notes
 
 - Inside the DeepSeek Harness file sandbox a nested process cannot open a pipe, so
-  `spawn(..., {stdio: 'pipe'})` fails with `EPERM`. `src/backend.js` retries with file descriptors;
-  `npm test` avoids `node --test` for the same reason (`npm run test:isolated` is the CI variant).
-- Run `npm run self-test` from a normal PowerShell window, not from a sandboxed session: a sandboxed
-  session cannot start Notepad, so the focus/typing/click checks report a warning instead.
+  `spawn(..., {stdio: 'pipe'})` fails with `EPERM`. `src/backend.js` retries with file descriptors.
+  `test/run.mjs` imports the test files instead of using `node --test` for the same reason (the
+  runner isolates each file in a child process); `node --test test/` is the variant for a machine
+  without that restriction.
+- Run `node src\cli.js self-test` from a normal PowerShell window, not from a sandboxed session: a
+  sandboxed session cannot start Notepad, so the focus/typing/click checks report a warning instead.
