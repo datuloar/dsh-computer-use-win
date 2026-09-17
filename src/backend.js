@@ -10,6 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const root = resolve(here, '..');
 
 export const backendScript = join(root, 'backends', 'windows.ps1');
+
 export const isWindows = process.platform === 'win32';
 
 export const FRESH_SECONDS = 5;
@@ -18,9 +19,24 @@ export const BACKEND_TIMEOUT_MS = 60_000;
 export const SLOW_BACKEND_TIMEOUT_MS = 300_000;
 
 const MAX_ARGUMENT_BYTES = 30_000;
-const POWERSHELL_FLAGS = ['-NoProfile', '-NonInteractive', '-NoLogo', '-ExecutionPolicy', 'Bypass', '-File', backendScript];
+const BROKER_POLL_MS = 40;
+const POWERSHELL_FLAGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-NoLogo',
+  '-ExecutionPolicy',
+  'Bypass',
+  '-File',
+  backendScript,
+];
 
 export const temp = (name) => join(tmpdir(), name);
+
+export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+function waitSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 export function ageSeconds(name) {
   try {
@@ -53,7 +69,8 @@ function backendFailure(error, timeoutMs) {
   if (stdout || stderr) return new ToolError(stdout || stderr);
   if (error.signal) {
     return new ToolError(
-      `the backend was stopped after ${Math.round(timeoutMs / 1000)}s (${error.signal}) — the machine is busy or a dialog is waiting`,
+      `the backend was stopped after ${Math.round(timeoutMs / 1000)}s (${error.signal}) — ` +
+        'the machine is busy or a dialog is waiting',
     );
   }
   return new ToolError(`the backend failed to start (${error.code ?? 'unknown'}) and said nothing`);
@@ -106,7 +123,9 @@ export function ps(args, timeoutMs = BACKEND_TIMEOUT_MS) {
   touch();
   const payload = JSON.stringify(args);
   if (payload.length > MAX_ARGUMENT_BYTES) {
-    throw new ToolError(`this argument is too long for one call (${payload.length} bytes) — split it into smaller steps`);
+    throw new ToolError(
+      `this argument is too long for one call (${payload.length} bytes) — split it into smaller steps`,
+    );
   }
   return exec(process.env.DSH_CU_POWERSHELL || 'powershell', POWERSHELL_FLAGS, { DSH_CU_ARGV: payload }, timeoutMs);
 }
@@ -164,6 +183,7 @@ function answerFromBroker(args, timeoutMs) {
       removeQuietly(responseFile);
       return answer.trim();
     }
+    waitSync(BROKER_POLL_MS);
   }
   if (existsSync(requestFile)) {
     removeQuietly(requestFile);

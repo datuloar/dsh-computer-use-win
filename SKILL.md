@@ -47,9 +47,10 @@ already-running `run` command line cannot be stopped by ESC.
 
 ## Commands
 
-    dsh-cu shot [file.png]                    capture the primary screen
+    dsh-cu shot [file.png] [--region <x> <y> <w> <h>]   capture the screen, or a crop of it
     dsh-cu move <x> <y>                       move the pointer
-    dsh-cu click <x> <y> [left|right|double]  click
+    dsh-cu click <x> <y> [left|right|middle|double|triple]   click
+    dsh-cu drag <x> <y> <to-x> <to-y>         press, glide to the second point, release
     dsh-cu wheel <delta> [<x> <y>] [--horizontal]   scroll, 120 = one notch, at that point when x y are given
     dsh-cu type <text>                        type into the focused window
     dsh-cu key <name> [down|up]               Enter, Esc, Tab, Space, Ctrl, Alt, F1..F12, arrows
@@ -87,14 +88,31 @@ instead of reusing the old ones.
 
 ## What the human sees
 
-- a panel at the top centre: "DeepSeek is controlling your computer" with the ESC hint;
-- during the announcement the same panel counts down and the frame pulses harder;
-- a soft blue frame around the whole screen edge;
-- your pointer is replaced by the animated marker with `--hide-cursor`, or stays visible next to it
-  without the flag.
+- a rounded panel at the top centre: a breathing dot, "DeepSeek is controlling your computer", the
+  command that is running ("click 640,380"), a divider and an `ESC` chip;
+- during the announcement the panel turns amber, the dot carries a countdown ring and the chip
+  reads "ESC to cancel";
+- a soft blue glow along the screen edge, rounded at the corners, breathing every 2.6 s;
+- your pointer is replaced by the white marker with `--hide-cursor`, or stays visible next to it
+  without the flag; every click leaves a ring where it landed.
 
-The marker is a window, so it appears in your own screenshots — that is how you see where the
-pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
+The panel names the command it is running, so the human can follow along without reading your
+logs. Typed text is reported as a character count, never as the text itself, so a password does
+not end up on screen. The marker is a window, so it appears in your own screenshots — that is how
+you see where the pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
+
+## Dragging and cropping
+
+`dsh-cu drag 420 300 980 300` presses at the first point, glides to the second in eased steps and
+releases: sliders, selections, a file onto a folder, a canvas stroke. A drag moves whatever it
+grabbed, so take a fresh shot afterwards.
+
+`dsh-cu shot --region 1200 600 420 240` captures only that rectangle in screen coordinates
+(clipped to the screen). Use it to read one detail — a label, a spinner, a single table row —
+instead of sending the whole screen through the image tool.
+
+`dsh-cu click <x> <y> middle` and `... triple` are there too: middle click opens a link in a new
+tab, triple click selects a whole line.
 
 ## Safety
 

@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { checkContract } from './contract.js';
@@ -12,6 +12,7 @@ export async function runSelfTest({ root, cli, exec }) {
   const aliveFile = join(tmpdir(), 'dsh-cu.alive');
   const pidFile = join(tmpdir(), 'dsh-cu.pid');
   const cursorMarker = join(tmpdir(), 'dsh-cu.cursor');
+  const actionFile = join(tmpdir(), 'dsh-cu.action');
 
   const cliCall = (args) => exec(process.execPath, [cli, ...args]);
   const backendCall = (args) =>
@@ -32,7 +33,7 @@ export async function runSelfTest({ root, cli, exec }) {
   const checkSoft = async (name, fn) => {
     try {
       const detail = await fn();
-      console.log(`WARN  ${name}${detail ? ` — ${detail}` : ''}`);
+      console.log(`PASS  ${name} (environment dependent)${detail ? ` — ${detail}` : ''}`);
     } catch (error) {
       warnings.push(name);
       console.log(`WARN  ${name} — ${error.message}`);
@@ -101,6 +102,17 @@ export async function runSelfTest({ root, cli, exec }) {
     return `${size} bytes`;
   });
 
+  await check('shot --region crops to the rectangle it was given', () => {
+    const cropFile = temp(`selftest-crop-${Date.now()}.png`);
+    assert(cliCall(['shot', cropFile, '--region', '80', '60', '240', '180']).includes('SAVED'), 'no SAVED line');
+    const png = readFileSync(cropFile);
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    unlinkSync(cropFile);
+    assert(width === 240 && height === 180, `the crop is ${width}x${height}, not 240x180`);
+    return '240x180 PNG';
+  });
+
   await check('pos reads pointer and foreground window', () => {
     const output = cliCall(['pos']);
     assert(/CURSOR -?\d+,-?\d+/.test(output), `unexpected output: ${output}`);
@@ -118,6 +130,16 @@ export async function runSelfTest({ root, cli, exec }) {
       if (Math.abs(Number(read[1]) - 320) + Math.abs(Number(read[2]) - 240) <= 4) return last;
     }
     throw new Error(`pointer landed at ${last} instead of 320,240`);
+  });
+
+  await check('the indicator is told which command is running', () => {
+    cliCall(['move', '320', '240']);
+    const label = readFileSync(actionFile, 'utf8').trim();
+    assert(label === 'move 320,240', `the panel was told "${label}" instead of "move 320,240"`);
+    cliCall(['wheel', '-120', '400', '300']);
+    const scrolled = readFileSync(actionFile, 'utf8').trim();
+    assert(scrolled === 'scroll -120 at 400,300', `the panel was told "${scrolled}" for a scroll`);
+    return `"${label}", then "${scrolled}"`;
   });
 
   await check('wheel scrolls, at a point, and sideways', () => {
@@ -226,6 +248,7 @@ export async function runSelfTest({ root, cli, exec }) {
   await sleep(600);
 
   const scratch = temp(`scratch-${Date.now()}.txt`);
+  writeFileSync(scratch, 'dsh-cu self-test\n');
   const notepad = spawn('notepad.exe', [scratch], { detached: true, stdio: 'ignore' });
   notepad.unref();
   await sleep(2500);
@@ -265,7 +288,20 @@ export async function runSelfTest({ root, cli, exec }) {
           modified = foregroundTitle().includes('*');
         }
         assert(modified, `the document stayed unmodified after three attempts ("${foregroundTitle()}")`);
+        const label = readFileSync(actionFile, 'utf8').trim();
+        assert(/^type \d+ chars$/.test(label), `typed text must be counted, not shown: "${label}"`);
         return `document marked as edited: ${foregroundTitle().slice(0, 40)}`;
+      });
+
+      await check('drag glides between two points inside the window', () => {
+        const [target] = notepadWindows();
+        assert(target && target.width > 200, 'no usable Notepad rectangle to drag in');
+        const y = Math.round(target.top + Math.min(90, target.height / 2));
+        const from = Math.round(target.left + 40);
+        const to = Math.round(target.left + Math.min(240, target.width - 40));
+        const output = cliCall(['drag', String(from), String(y), String(to), String(y)]);
+        assert(output.includes(`DRAGGED ${from},${y} -> ${to},${y}`), `unexpected drag output: ${output}`);
+        return `${to - from}px selection drag`;
       });
 
       await check('click, double click and right click reach the target window', () => {
@@ -297,7 +333,9 @@ export async function runSelfTest({ root, cli, exec }) {
       [['click', '99999', '10'], /between -32767 and 32767/],
       [['move', '10', '-99999'], /between -32767 and 32767/],
       [['shot', root], /is a directory/],
-      [['click', '10', '10', 'middle'], /click mode must be/],
+      [['click', '10', '10', 'sideways'], /click mode must be/],
+      [['drag', '10', '10', '20'], /to y is required/],
+      [['shot', '--region', '1', '2', '3'], /--region needs x y width height/],
       [['wheel', '0'], /must not be zero/],
       [['key', 'Enter', 'sideways'], /phase must be/],
       [['keys', 'ctrl'], /combination/],
@@ -307,6 +345,7 @@ export async function runSelfTest({ root, cli, exec }) {
       [['overlay', '--nonsense'], /unknown overlay flag/],
       [['overlay', '--announce', '99'], /between 0 and 30/],
       [['overlay', '--stop', '--restore-cursor'], /not both/],
+      [['overlay', '--stop', '--hide-cursor'], /only applies while starting/],
       [['nonsense'], /unknown command/],
     ];
     process.env.DSH_CU_ALLOW_NO_INDICATOR = '1';

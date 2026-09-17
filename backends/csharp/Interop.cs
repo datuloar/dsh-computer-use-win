@@ -4,11 +4,16 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows.Automation;
 using System.Windows.Forms;
 
 namespace DshCu
 {
+[StructLayout(LayoutKind.Sequential)]
 public struct POINT { public int X; public int Y; }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -25,9 +30,6 @@ public struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0
 
 [StructLayout(LayoutKind.Sequential)]
 public struct INPUT { public uint type; public INPUTUNION u; }
-
-[StructLayout(LayoutKind.Sequential)]
-public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
 
 [StructLayout(LayoutKind.Sequential)]
 public struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
@@ -57,6 +59,8 @@ public static class Native
     public const uint MOUSEEVENTF_LEFTUP = 0x0004;
     public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    public const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
     public const uint MOUSEEVENTF_HWHEEL = 0x1000;
     public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
@@ -64,6 +68,10 @@ public static class Native
     public const uint KEYEVENTF_UNICODE = 0x0004;
 
     public const int CursorShowing = 0x00000001;
+    public const uint GA_ROOT = 2;
+    public const uint WM_GETOBJECT = 0x003D;
+    public const int OBJID_CLIENT = unchecked((int)0xFFFFFFFC);
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
 
     public static readonly uint[] StandardCursorIds = new uint[]
     {
@@ -71,6 +79,8 @@ public static class Native
     };
 
     public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    public delegate bool EnumWindowProc(IntPtr hWnd, IntPtr param);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -110,9 +120,6 @@ public static class Native
 
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
-
-    [DllImport("user32.dll")]
-    public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
 
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
@@ -166,6 +173,31 @@ public static class Native
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumChildWindows(IntPtr parent, EnumWindowProc callback, IntPtr param);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int capacity);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        uint message,
+        IntPtr wParam,
+        IntPtr lParam,
+        uint flags,
+        uint timeoutMs,
+        out IntPtr result);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll")]
     private static extern bool SetProcessDpiAwarenessContext(IntPtr context);
 
     [DllImport("user32.dll")]
@@ -200,14 +232,6 @@ public static class Native
         info.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
         if (!GetCursorInfo(ref info)) return false;
         return (info.flags & CursorShowing) != 0;
-    }
-
-    public static int LastInputTick()
-    {
-        LASTINPUTINFO info = new LASTINPUTINFO();
-        info.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
-        GetLastInputInfo(ref info);
-        return unchecked((int)info.dwTime);
     }
 
     public static string ForegroundWindowTitle()

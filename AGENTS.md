@@ -19,6 +19,11 @@ is the distribution.
 | `lib/skill.js`, `lib/frontmatter.js` | the skill registration, read from `SKILL.md` |
 | `backends/windows.ps1` | the PowerShell host: argv, dispatch, indicator lifecycle, broker |
 | `backends/csharp/*.cs` | the C# the host compiles: one type per file |
+| `backends/csharp/Theme.cs` | the only place colours, fonts, the tick rate and DPI scaling live |
+| `backends/csharp/LayeredWindow.cs` | the per-pixel-alpha window every visual layer draws into |
+| `backends/csharp/EdgeGlow.cs`, `FrameRenderer.cs` | the screen-edge glow: four strips, one bitmap each |
+| `backends/csharp/PanelForm.cs`, `PanelRenderer.cs`, `PanelState.cs` | the status pill and what it shows |
+| `backends/csharp/PointerRenderer.cs` | the marker: arrow, trail, click rings |
 | `SKILL.md` | what the agent reads: when to use it, the loop, the safety rules |
 | `test/*.test.mjs`, `test/run.mjs` | `node:test` suite for the pure parts |
 
@@ -54,6 +59,26 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   input or changes the machine; `cli.js` refuses to run it while the indicator is down. `broker` is
   the one command that gates inside its handler: `start` and `stop` change machine state, `status`
   does not.
+- **The C# is compiled by the .NET Framework compiler, so it is C# 5 and ASCII.** No string
+  interpolation, no expression-bodied members, no `out var`, no tuples; a non-ASCII glyph goes in
+  as `(char)0x2026`, because `Get-Content` would otherwise have to guess the file encoding.
+- **Layered windows take premultiplied bitmaps.** `Theme.Canvas` returns `Format32bppPArgb` and
+  `Theme.Surface` sets the smoothing modes; `UpdateLayeredWindow` with `AC_SRC_ALPHA` blends
+  straight-alpha pixels too brightly, which is what the old frame looked like. Draw through those
+  two helpers and the halos stay away.
+- **Nothing visual carries a raw pixel constant.** Sizes are design units passed through
+  `Theme.Px` / `Theme.Pxf`, so the panel, the marker and the glow keep their proportions at 125 %
+  and 150 % scaling; colours and fonts come from `Theme` so one edit restyles the whole indicator.
+  `DSH_CU_UI_SCALE` multiplies that scale, which is also how the scaling path gets exercised on a
+  96 dpi development machine.
+- **The glow is four strips, not one full-screen window.** A layered window the size of the screen
+  re-blits ~14 MB every frame; `EdgeGlow` presents four thin strips instead and skips the present
+  when the pulse alpha has not changed, which is why `Indicator.PulseAlpha` quantises it.
+- **The panel label comes from the backend, once.** `Get-ActionLabel` in `backends/windows.ps1`
+  turns the dispatched command into the line the pill shows and writes `dsh-cu.action`; every
+  caller (CLI, direct backend call, elevated broker) goes through that one place. `type` is
+  reported as a character count on purpose: the panel is on screen, and typed text can be a
+  secret.
 - **Arguments never travel as PowerShell parameters.** `backend.js` sends a JSON array in
   `DSH_CU_ARGV`; the host parses it and then deletes it, because `overlay-start` and `broker-start`
   launch a new PowerShell that must not inherit it. `-File` argument parsing drops embedded quotes
@@ -84,14 +109,20 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   payload, because a long `type` legitimately takes longer than a click.
 - **The backend prints one `ERROR <message>` line** for a failure (see the `trap` in
   `backends/windows.ps1`); `src/backend.js` turns that into a `ToolError`. Do not print PowerShell
-  error formatting at the user.
+  error formatting at the user. The `run` branch is the exception that proves it: with
+  `$ErrorActionPreference = 'Stop'`, `2>&1` on a native command turns any stderr line into a
+  terminating error, so `run` lowers the preference around the call and reports `EXIT <code>`.
+- **Operands arrive as a list.** `backends/windows.ps1` collects them into `$operands` and reads
+  them with `Arg <n>`, so a command can take four coordinates (`drag`) or five (`shot --region`)
+  without growing another `$A<n>` parameter.
 - **A new C# type gets its own file** in `backends/csharp/` and its name is added to `$sources` in
   `backends/windows.ps1`, which concatenates them into one `Add-Type` unit. The `using` directives
   live in `Interop.cs`; every other file only opens `namespace DshCu`.
 - **State files are the CLI ↔ indicator contract**, all in `%TEMP%`: `dsh-cu.alive` (heartbeat),
   `dsh-cu.pid` (pid plus start ticks), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
-  `dsh-cu.cursor` (present while `--hide-cursor` holds the pointer; the CLI heals leftover state),
-  `dsh-cu.broker.ready|stop|req.*|res.*`. Both sides treat a heartbeat older than 5 s as "gone"; an
+  `dsh-cu.action` (what the pill shows), `dsh-cu.cursor` (present while `--hide-cursor` holds the
+  pointer; the CLI heals leftover state), `dsh-cu.broker.ready|stop|req.*|res.*`. `StateFiles.cs`
+  owns the paths and the PowerShell host reads them from there, so a name is written once. Both sides treat a heartbeat older than 5 s as "gone"; an
   indicator that never sees a touch file stops itself after the same five minutes, so a broken
   watchdog cannot leave one running forever.
 - **Cursor hiding is opt-in and always recoverable.** `overlay --hide-cursor` blanks the system

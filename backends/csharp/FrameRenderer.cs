@@ -3,44 +3,64 @@ namespace DshCu
 
 public static class FrameRenderer
 {
-    private const int FadeDepth = 68;
-    private const int CoreWidth = 4;
-    private const int GlowPeak = 168;
+    private const double DepthDip = 34;
+    private const double CoreDip = 2;
+    private const double CornerDip = 18;
+    private const double FeatherPx = 1.2;
+    private const int CoreAlpha = 224;
+    private const int GlowAlpha = 132;
 
-    public static Bitmap Build(Rectangle screen)
+    private static readonly Color Core = Color.FromArgb(188, 208, 255);
+    private static readonly Color Glow = Theme.Accent;
+
+    public static int Depth()
     {
-        Bitmap bitmap = new Bitmap(screen.Width, screen.Height, PixelFormat.Format32bppArgb);
+        return Math.Max(6, Theme.Px(DepthDip));
+    }
+
+    public static Bitmap Strip(Rectangle strip, Rectangle screen)
+    {
+        Bitmap bitmap = Theme.Canvas(strip.Width, strip.Height);
         BitmapData data = bitmap.LockBits(
-            new Rectangle(0, 0, screen.Width, screen.Height),
+            new Rectangle(0, 0, bitmap.Width, bitmap.Height),
             ImageLockMode.WriteOnly,
-            PixelFormat.Format32bppArgb);
+            PixelFormat.Format32bppPArgb);
         try
         {
             int rowBytes = Math.Abs(data.Stride);
-            byte[] buffer = new byte[rowBytes * screen.Height];
-            for (int y = 0; y < screen.Height; y++)
+            byte[] buffer = new byte[rowBytes * bitmap.Height];
+            double depth = Depth();
+            double core = Math.Max(1.0, Theme.Pxf(CoreDip));
+            double corner = Theme.Pxf(CornerDip);
+            for (int y = 0; y < bitmap.Height; y++)
             {
                 int row = y * rowBytes;
-                for (int x = 0; x < screen.Width; x++)
+                for (int x = 0; x < bitmap.Width; x++)
                 {
-                    double distance = DistanceToEdge(x, y, screen.Width, screen.Height);
-                    if (distance >= FadeDepth) continue;
-                    int pixel = row + x * 4;
-                    if (distance < CoreWidth)
+                    double distance = InsideDistance(strip.X + x, strip.Y + y, screen, corner);
+                    if (distance >= depth || distance <= -FeatherPx) continue;
+                    Color color;
+                    int alpha;
+                    if (distance < core)
                     {
-
-                        buffer[pixel] = 255;
-                        buffer[pixel + 1] = 214;
-                        buffer[pixel + 2] = 158;
-                        buffer[pixel + 3] = (byte)(186 - distance * 26);
-                        continue;
+                        color = Core;
+                        alpha = distance < 0
+                            ? (int)(CoreAlpha * (1 + distance / FeatherPx))
+                            : (int)(CoreAlpha - distance * 16);
                     }
-                    double t = 1.0 - distance / FadeDepth;
-                    double smooth = t * t * (3 - 2 * t);
-                    buffer[pixel] = 254;
-                    buffer[pixel + 1] = 107;
-                    buffer[pixel + 2] = 77;
-                    buffer[pixel + 3] = (byte)(int)(GlowPeak * smooth);
+                    else
+                    {
+                        color = Glow;
+                        double t = 1.0 - (distance - core) / (depth - core);
+                        alpha = (int)(GlowAlpha * Math.Pow(Theme.Smooth(t), 1.4));
+                    }
+                    if (alpha <= 0) continue;
+                    if (alpha > 255) alpha = 255;
+                    int pixel = row + x * 4;
+                    buffer[pixel] = (byte)(color.B * alpha / 255);
+                    buffer[pixel + 1] = (byte)(color.G * alpha / 255);
+                    buffer[pixel + 2] = (byte)(color.R * alpha / 255);
+                    buffer[pixel + 3] = (byte)alpha;
                 }
             }
             Marshal.Copy(buffer, 0, data.Scan0, buffer.Length);
@@ -52,13 +72,16 @@ public static class FrameRenderer
         return bitmap;
     }
 
-    private static double DistanceToEdge(int x, int y, int width, int height)
+    private static double InsideDistance(int x, int y, Rectangle screen, double radius)
     {
-        int left = x;
-        int right = width - 1 - x;
-        int top = y;
-        int bottom = height - 1 - y;
-        return Math.Min(Math.Min(left, right), Math.Min(top, bottom));
+        double halfWidth = screen.Width / 2.0;
+        double halfHeight = screen.Height / 2.0;
+        double offsetX = Math.Abs(x + 0.5 - (screen.Left + halfWidth)) - (halfWidth - radius);
+        double offsetY = Math.Abs(y + 0.5 - (screen.Top + halfHeight)) - (halfHeight - radius);
+        double outside = Math.Sqrt(
+            Math.Max(offsetX, 0) * Math.Max(offsetX, 0) + Math.Max(offsetY, 0) * Math.Max(offsetY, 0));
+        double inside = Math.Min(Math.Max(offsetX, offsetY), 0);
+        return radius - outside - inside;
     }
 }
 }

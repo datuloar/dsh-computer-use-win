@@ -47,7 +47,6 @@ async function main(argv) {
   repairStrandedCursor();
 
   const command = findCommand(name);
-
   if (command.windowsOnly !== false) {
     if (!isWindows) refuseOffWindows();
     if (!existsSync(backendScript)) fail(`backend missing: ${backendScript}`);
@@ -60,7 +59,6 @@ async function main(argv) {
 try {
   await main(process.argv.slice(2));
 } catch (error) {
-
   if (error instanceof ToolError) fail(error.message);
   fail(`${error.message}\n${error.stack ?? ''}`.trim());
 }

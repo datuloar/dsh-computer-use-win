@@ -18,12 +18,12 @@ with the .NET Framework that ships with Windows.
 
 ## Why this one
 
-- **The human can see it and kill it.** An on-screen panel, a frame around the screen and an
-  animated pointer marker; ESC stops everything. Injected ESC is ignored, so an agent cannot
-  switch off its own indicator.
-- **Input is refused while the indicator is down.** `move`, `click`, `wheel`, `type`, `key`,
-  `keys`, `clipboard` and `run` answer with a refusal until `dsh-cu overlay` has put the frame
-  on screen. That gate lives in the tool, not in the prompt.
+- **The human can see it and kill it.** A rounded status panel that names the command being run
+  ("click 640,380"), a glow along the screen edge and an animated pointer marker; ESC stops
+  everything. Injected ESC is ignored, so an agent cannot switch off its own indicator.
+- **Input is refused while the indicator is down.** `move`, `click`, `drag`, `wheel`, `type`,
+  `key`, `keys`, `clipboard` and `run` answer with a refusal until `dsh-cu overlay` has put the
+  frame on screen. That gate lives in the tool, not in the prompt.
 - **It runs on a stock Windows box.** Other computer-use plugins drive an external native driver
   (cua-driver and friends) that has to be installed first; this one needs only the PowerShell and
   .NET that Windows already has.
@@ -60,6 +60,8 @@ dsh-cu shot                          # capture the screen, print the path
 dsh-cu click 640 380                 # click there
 dsh-cu type "hello"                  # type into the focused window
 dsh-cu keys ctrl+l                   # key combinations
+dsh-cu drag 420 300 980 300          # press, glide, release
+dsh-cu shot --region 1200 600 420 240   # read one detail instead of the whole screen
 dsh-cu overlay --stop                # stop and clean up
 ```
 
@@ -72,9 +74,10 @@ dsh-cu overlay --stop                # stop and clean up
 
 ## Commands
 
-    dsh-cu shot [file.png]                    capture the primary screen
+    dsh-cu shot [file.png] [--region <x> <y> <w> <h>]   capture the screen, or a crop of it
     dsh-cu move <x> <y>                       move the pointer
-    dsh-cu click <x> <y> [left|right|double]  click
+    dsh-cu click <x> <y> [left|right|middle|double|triple]   click
+    dsh-cu drag <x> <y> <to-x> <to-y>         press, glide to the second point, release
     dsh-cu wheel <delta> [<x> <y>] [--horizontal]   scroll, 120 = one notch, at that point when x y are given
     dsh-cu type <text>                        type into the focused window
     dsh-cu key <name> [down|up]               Enter, Esc, Tab, Space, Ctrl, Alt, F1..F12, arrows
@@ -94,9 +97,14 @@ dsh-cu overlay --stop                # stop and clean up
     dsh-cu overlay --stop                     stop the indicator, restore the cursor
     dsh-cu overlay --restore-cursor           emergency cursor rescue
 
-`shot` writes into `%TEMP%\dsh-computer-use\` and prints `SAVED <path> <bytes>`. `--quiet` draws
-only the pointer marker, for pixel-accurate reads. Arguments are handed to the backend as a JSON
-array, so typed text and window titles keep their spaces, quotes and leading dashes.
+`shot` writes into `%TEMP%\dsh-computer-use\` and prints `SAVED <path> <bytes>`; `--region x y w h`
+crops it to that rectangle in screen coordinates. `--quiet` draws only the pointer marker, for
+pixel-accurate reads. Arguments are handed to the backend as a JSON array, so typed text and window
+titles keep their spaces, quotes and leading dashes.
+
+`drag` presses at the first point, glides to the second in eased steps and releases it, which is
+what sliders, selections and drag-and-drop targets expect; `click` also takes `middle` and
+`triple`.
 
 Scrolling follows the pointer, so pass it the page: `dsh-cu wheel -600 1280 700` is five notches
 down at that point, `--horizontal` scrolls sideways, and `key PageDown` / `keys ctrl+End` scroll the
@@ -110,6 +118,9 @@ focused page. Every scroll moves the coordinates you measured — take a fresh s
 - **The indicator comes up before input is allowed**, and the CLI waits out the full announcement
   (default 8 s) after the frame is confirmed on screen.
 - **ESC stops it** — a physical press only; injected ESC is ignored.
+- **The panel says what is happening.** Every command writes a one-line label the indicator shows
+  next to the status text, so the human can follow along; `type` is reported as a character count
+  rather than the text, so a typed password never appears on screen.
 - **`overlay --stop`** kills the indicator by pid file, reloads the system cursors and removes its
   state files. The indicator also stops itself after five minutes without a command.
 - **One pointer, or two.** By default your own cursor stays visible and the marker is drawn next to
@@ -123,6 +134,14 @@ focused page. Every scroll moves the coordinates you measured — take a fresh s
   shell, so the only thing they add is elevation.
 - **`clipboard get` is gated too**: it can expose whatever the human last copied.
 - The skill instructs the agent never to press anything destructive without an explicit request.
+
+## Environment variables
+
+| Variable | What it does |
+|---|---|
+| `DSH_CU_ALLOW_NO_INDICATOR=1` | let input through while the indicator is down — deliberate override, nothing else bypasses the gate |
+| `DSH_CU_UI_SCALE=1.5` | scale the indicator on top of the display DPI, for a 4K panel or weak eyes (0.75–4) |
+| `DSH_CU_POWERSHELL=pwsh` | run the backend with another PowerShell executable |
 
 ## Running from inside a sandboxed agent session
 
