@@ -1,0 +1,76 @@
+{
+  "name": "dsh-cu",
+  "version": "1.1.0",
+  "description": "Windows computer use for the DeepSeek Harness: screenshot, click, type, scroll, read windows and the clipboard, plus an on-screen indicator the human sees and stops with ESC. No dependencies, no driver to install.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-cu": "src/cli.js"
+  },
+  "files": [
+    "lib",
+    "src",
+    "backends",
+    "docs",
+    "install.ps1",
+    "SKILL.md",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "verify": "node src/verify.js",
+    "test": "node test/run.mjs",
+    "test:isolated": "node --test test/",
+    "check": "npm run verify && npm test",
+    "self-test": "node src/cli.js self-test",
+    "doctor": "node src/cli.js doctor",
+    "shot": "node src/cli.js shot ./.shot.png"
+  },
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1"
+  },
+  "os": [
+    "win32"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "computer-use",
+    "gui-automation",
+    "automation",
+    "screenshot",
+    "sendinput",
+    "windows",
+    "skill"
+  ],
+  "license": "MIT",
+  "author": "dsh-computer-use contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/datuloar/dsh-computer-use-win.git"
+  },
+  "homepage": "https://github.com/datuloar/dsh-computer-use-win#readme",
+  "bugs": {
+    "url": "https://github.com/datuloar/dsh-computer-use-win/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-skill": ">=0.1.0-rc.8 <0.2.0 || ^0.1.1-rc.1 || ^0.1.2-alpha.1 || ^0.1.5-rc.1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+*.shot.png
+.shot.png
+shots/*.png
