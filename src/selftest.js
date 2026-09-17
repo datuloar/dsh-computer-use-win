@@ -158,6 +158,7 @@ export async function runSelfTest({ root, cli, exec }) {
     while (Date.now() < deadline && !backendCall(['overlay-state']).includes('STOPPED')) await sleep(200);
     assert(backendCall(['overlay-state']).includes('STOPPED'), 'indicator still alive');
     assert(!existsSync(aliveFile) && !existsSync(pidFile) && !existsSync(cursorMarker), 'state files were left behind');
+    assert(backendCall(['cursor-state']).includes('CURSOR_VISIBLE'), 'the pointer is not visible after a stop');
     return 'process, cursor and files clean';
   });
 
@@ -166,7 +167,7 @@ export async function runSelfTest({ root, cli, exec }) {
     return 'CURSOR_RESTORED';
   });
 
-  await check('a killed indicator is repaired and refuses input at once', () => {
+  await check('a killed indicator refuses input at once and leaves the pointer alone', () => {
     cliCall(['overlay', '--announce', '0']);
     const owner = Number.parseInt(readFileSync(pidFile, 'utf8').trim().split(/\s+/)[0], 10);
     exec('powershell', ['-NoProfile', '-Command', `Stop-Process -Id ${owner} -Force`]);
@@ -181,8 +182,8 @@ export async function runSelfTest({ root, cli, exec }) {
       /indicator is not running/.test(refusal),
       `expected a refusal right after the kill, got: ${refusal.trim() || 'no output'}`,
     );
-    assert(!existsSync(cursorMarker), 'the stranded-cursor marker was not cleared');
-    return 'refused immediately, pointer restored';
+    assert(backendCall(['cursor-state']).includes('CURSOR_VISIBLE'), 'the pointer did not survive the kill');
+    return 'refused immediately, pointer untouched';
   });
 
   await check('a stale pid file never kills an unrelated process', async () => {

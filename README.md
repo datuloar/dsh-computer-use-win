@@ -112,13 +112,13 @@ focused page. Every scroll moves the coordinates you measured — take a fresh s
 - **The indicator comes up before input is allowed**, and the CLI waits out the full announcement
   (default 8 s) after the frame is confirmed on screen.
 - **ESC stops it** — a physical press only; injected ESC is ignored.
-- **`overlay --stop`** kills the indicator by pid file, restores the system cursor and removes its
-  state files. `--restore-cursor` is the emergency path if a run ever dies. The indicator also
-  stops itself after five minutes without a command.
-- **The pointer comes back even after a kill.** Blanking the system cursor is session-wide, so the
-  indicator writes a marker while it holds the cursor. If it is killed — which no cleanup code can
-  survive — the next `dsh-cu` command sees the marker, checks the recorded pid, and restores the
-  cursor before doing anything else. `dsh-cu doctor` reports the state.
+- **`overlay --stop`** kills the indicator by pid file, reloads the system cursors and removes its
+  state files. The indicator also stops itself after five minutes without a command.
+- **The tool never hides your pointer.** The animated marker is drawn *next to* the real cursor, so
+  killing the indicator — which no cleanup code can survive — cannot leave you without a pointer.
+  `dsh-cu overlay --restore-cursor` reloads the system cursors anyway (safe to run any time) and is
+  what repairs a machine left in the old state by version 1.1.0; `dsh-cu doctor` reports whether the
+  pointer is showing.
 - **`run` and `broker start` are the escape hatches.** `broker start` raises a UAC prompt and lets
   `run` execute a command line elevated, for windows this process cannot reach (UIPI). Both are
   gated behind the indicator and are meant for explicit human requests — the Harness already has a
@@ -161,7 +161,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File backends\windows.ps1 shot C:
 |---|---|---|
 | `spawnSync powershell EPERM` | an old version without the file-descriptor fallback, or a different sandbox rule | update; use the direct backend call above |
 | `the on-screen indicator is not running` | no `dsh-cu overlay` yet, or it was stopped/ESC'd | run `dsh-cu overlay`, or set `DSH_CU_ALLOW_NO_INDICATOR=1` deliberately |
-| The cursor is invisible and no frame is on screen | an indicator was killed instead of stopped | the next `dsh-cu` command repairs it by itself; `dsh-cu overlay --restore-cursor` does it by hand |
+| The cursor is invisible (only possible if you upgraded from 1.1.0, which blanked it) | that version replaced the system cursors and a killed indicator could leave them blank | `dsh-cu overlay --restore-cursor`; if that does not help, re-apply a pointer scheme in Settings → Mouse → Additional mouse options → Pointers, or sign out and back in |
 | `the elevated broker took the command but did not answer` | it is still running that command | wait, then retry if needed; `dsh-cu broker stop` if it is wedged |
 | `the backend was stopped after 60s` | a modal dialog or a busy machine blocked the call | look at the screen, dismiss the dialog, retry |
 | `capture returned an empty image` | session locked or display asleep | unlock and retry |

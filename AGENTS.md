@@ -84,15 +84,17 @@ npm run doctor      # what this machine can do
   live in `Interop.cs`; every other file only opens `namespace DshCu`.
 - **State files are the CLI ↔ indicator contract**, all in `%TEMP%`: `dsh-cu.alive` (heartbeat),
   `dsh-cu.pid` (pid plus start ticks), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
-  `dsh-cu.cursor` (the system cursors are blanked), `dsh-cu.broker.ready|stop|req.*|res.*`. Both
-  sides treat a heartbeat older than 5 s as "gone"; an indicator that never sees a touch file stops
-  itself after the same five minutes, so a broken watchdog cannot leave one running forever.
-- **The pointer must never stay blanked.** `SystemCursors.Hide()` writes `dsh-cu.cursor` *before*
-  blanking and `Restore()` deletes it; `cli.js` repairs a stranded cursor on the next command. The
-  repair checks the recorded pid, not the heartbeat: the heartbeat stays fresh for 5 s after a
-  kill, and that window is exactly when the user has no pointer. Do not weaken either half, and
-  keep the self-test check that covers it. The repair note goes to stderr on purpose, so it can
-  never mix into a command's parsed stdout.
+  `dsh-cu.cursor` (only ever written by version 1.1.0, read to heal its leftover state),
+  `dsh-cu.broker.ready|stop|req.*|res.*`. Both sides treat a heartbeat older than 5 s as "gone"; an
+  indicator that never sees a touch file stops itself after the same five minutes, so a broken
+  watchdog cannot leave one running forever.
+- **Never blank or replace the system cursor.** Version 1.1.0 hid it with `SetSystemCursor`; when
+  the process was killed, Windows kept the blank cursors and even `SPI_SETCURSORS` did not always
+  bring the pointer back — the user lost their mouse pointer twice, with no way to tell from the
+  process that it was gone. The marker is drawn next to the real cursor instead.
+  `SystemCursors.Restore()` remains only as a healer for machines left in that state (it deletes
+  `dsh-cu.cursor` and reloads the cursors), `doctor` reports `cursor-state`, and the self-test
+  asserts the pointer is showing after a stop and after a killed indicator.
 - **Do not solve captchas in a delivered feature.** The tool has no captcha solver and the skill
   says so; what an operator clicks on their own machine is their decision, not a product claim.
 

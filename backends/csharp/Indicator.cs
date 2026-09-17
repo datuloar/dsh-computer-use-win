@@ -33,9 +33,8 @@ public class Indicator : ApplicationContext
         _announceSeconds = announceSeconds;
         _clock.Start();
         _pointerRenderer = new PointerRenderer(System.Windows.Forms.Cursor.Position);
-        RestoreCursorOnUnexpectedExit();
+        SystemCursors.Restore();
 
-        SystemCursors.Hide();
         StateFiles.Write(StateFiles.Touch, DateTime.UtcNow.ToString("O"));
         StateFiles.Write(StateFiles.Pid, Process.GetCurrentProcess().Id + " " + StartTicks());
 
@@ -51,13 +50,6 @@ public class Indicator : ApplicationContext
         _timer.Interval = TickMs;
         _timer.Tick += delegate { Tick(); };
         _timer.Start();
-    }
-
-    private void RestoreCursorOnUnexpectedExit()
-    {
-        AppDomain.CurrentDomain.ProcessExit += delegate { SystemCursors.Restore(); };
-        AppDomain.CurrentDomain.UnhandledException += delegate { SystemCursors.Restore(); };
-        Application.ThreadException += delegate { SystemCursors.Restore(); };
     }
 
     private static string StartTicks()

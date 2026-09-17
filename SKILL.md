@@ -87,7 +87,7 @@ instead of reusing the old ones.
 - a panel at the top centre: "DeepSeek is controlling your computer" with the ESC hint;
 - during the announcement the same panel counts down and the frame pulses harder;
 - a soft blue frame around the whole screen edge;
-- the local cursor is hidden and replaced by an animated arrow marker.
+- your own pointer is never touched: it stays exactly where it is.
 
 The marker is a window, so it appears in your own screenshots — that is how you see where the
 pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
@@ -107,9 +107,9 @@ pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
 - `overlay --stop` is not optional: it kills the indicator, restores the cursor and removes its
   state files. `dsh-cu overlay-state` says whether it is still running. The indicator also stops
   itself after five minutes without a command from you.
-- While the indicator is up your real cursor is replaced by the marker. If an indicator was killed
-  instead of stopped, the next `dsh-cu` command restores the cursor by itself; `dsh-cu
-  overlay --restore-cursor` does it right away, and `dsh-cu doctor` reports the state.
+- The tool never hides or replaces your pointer: the animated marker is drawn next to it. Machines
+  left with an invisible cursor by version 1.1.0 are repaired by `dsh-cu overlay --restore-cursor`,
+  and `dsh-cu doctor` reports the state.
 
 ## Limits
 

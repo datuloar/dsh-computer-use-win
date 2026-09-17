@@ -1,6 +1,6 @@
 namespace DshCu
 {
-public static class Input
+public static class InputInjector
 {
     private const uint Mouse = 0;
     private const uint Keyboard = 1;

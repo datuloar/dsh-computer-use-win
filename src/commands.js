@@ -6,7 +6,6 @@ import {
   cursorMayBeHidden,
   exec,
   indicatorIsUp,
-  indicatorProcessAlive,
   input,
   isWindows,
   ps,
@@ -225,9 +224,12 @@ function runDoctor() {
 }
 
 function describeCursor() {
-  if (!cursorMayBeHidden()) return 'visible';
-  if (indicatorProcessAlive()) return 'hidden by the running indicator';
-  return 'HIDDEN — run "dsh-cu overlay --restore-cursor"';
+  if (cursorMayBeHidden()) return 'HIDDEN until restored — run "dsh-cu overlay --restore-cursor"';
+  try {
+    return ps(['cursor-state']).includes('CURSOR_HIDDEN') ? 'HIDDEN — run "dsh-cu overlay --restore-cursor"' : 'visible';
+  } catch {
+    return 'unknown';
+  }
 }
 
 function describeDisplay() {  if (!isWindows || !existsSync(backendScript)) return 'unknown (not a Windows host)';

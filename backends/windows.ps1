@@ -33,7 +33,7 @@ if ($env:DSH_CU_ARGV) {
     Remove-Item Env:\DSH_CU_ARGV -ErrorAction SilentlyContinue
 }
 
-$sources = @('Interop', 'StateFiles', 'Input', 'OverlayForm', 'PanelForm', 'PointerRenderer', 'FrameRenderer', 'Indicator', 'SystemCursors')
+$sources = @('Interop', 'StateFiles', 'InputInjector', 'OverlayForm', 'PanelForm', 'PointerRenderer', 'FrameRenderer', 'Indicator', 'SystemCursors')
 $source = ($sources | ForEach-Object { Get-Content -Raw (Join-Path $PSScriptRoot "csharp\$_.cs") }) -join "`n"
 Add-Type -TypeDefinition $source -ReferencedAssemblies System.Drawing, System.Windows.Forms
 [DshCu.Native]::EnableDpiAwareness()
@@ -138,20 +138,20 @@ switch ($Command) {
         $bitmap.Dispose()
         Write-Output ("CAPTURED " + $bounds.Width + "x" + $bounds.Height)
     }
-    'move' { [DshCu.Input]::Move((Test-Integer $A1 'x'), (Test-Integer $A2 'y')) }
-    'click' { [DshCu.Input]::Click((Test-Integer $A1 'x'), (Test-Integer $A2 'y'), $(if ($A3) { $A3 } else { 'left' })) }
+    'move' { [DshCu.InputInjector]::Move((Test-Integer $A1 'x'), (Test-Integer $A2 'y')) }
+    'click' { [DshCu.InputInjector]::Click((Test-Integer $A1 'x'), (Test-Integer $A2 'y'), $(if ($A3) { $A3 } else { 'left' })) }
     'wheel' {
         $delta = Test-Integer $A1 'delta'
         $at = ($A2 -and $A3)
         if ($Horizontal) {
-            if ($at) { [DshCu.Input]::WheelHorizontalAt((Test-Integer $A2 'x'), (Test-Integer $A3 'y'), $delta) }
-            else { [DshCu.Input]::WheelHorizontal($delta) }
+            if ($at) { [DshCu.InputInjector]::WheelHorizontalAt((Test-Integer $A2 'x'), (Test-Integer $A3 'y'), $delta) }
+            else { [DshCu.InputInjector]::WheelHorizontal($delta) }
         }
-        elseif ($at) { [DshCu.Input]::WheelAt((Test-Integer $A2 'x'), (Test-Integer $A3 'y'), $delta) }
-        else { [DshCu.Input]::Wheel($delta) }
+        elseif ($at) { [DshCu.InputInjector]::WheelAt((Test-Integer $A2 'x'), (Test-Integer $A3 'y'), $delta) }
+        else { [DshCu.InputInjector]::Wheel($delta) }
     }
-    'type' { [DshCu.Input]::Type($A1) }
-    'key' { [DshCu.Input]::Key($A1, $(if ($A2) { $A2 } else { '' })) }
+    'type' { [DshCu.InputInjector]::Type($A1) }
+    'key' { [DshCu.InputInjector]::Key($A1, $(if ($A2) { $A2 } else { '' })) }
     'pos' {
         $point = New-Object DshCu.POINT
         [void][DshCu.Native]::GetCursorPos([ref]$point)
@@ -220,11 +220,11 @@ switch ($Command) {
         for ($index = 0; $index -lt $parts.Count - 1; $index++) {
             $name = $parts[$index].Trim()
             if ($modifiers -notcontains $name.ToLowerInvariant()) { throw "unknown modifier: $name" }
-            [DshCu.Input]::Press($name)
+            [DshCu.InputInjector]::Press($name)
             $held += $name
         }
-        $tapKey = $parts[-1].Trim(); [DshCu.Input]::Press($tapKey); [DshCu.Input]::Release($tapKey)
-        for ($index = $held.Count - 1; $index -ge 0; $index--) { [DshCu.Input]::Release($held[$index]) }
+        $tapKey = $parts[-1].Trim(); [DshCu.InputInjector]::Press($tapKey); [DshCu.InputInjector]::Release($tapKey)
+        for ($index = $held.Count - 1; $index -ge 0; $index--) { [DshCu.InputInjector]::Release($held[$index]) }
         Write-Output ('KEYS ' + $A1)
     }
     'clipboard' {
@@ -296,6 +296,9 @@ switch ($Command) {
     'overlay-state' {
         if ((Get-StateAge $aliveFile) -gt $FreshSeconds) { Write-Output 'STOPPED' } else { Write-Output 'RUNNING' }
         exit 0
+    }
+    'cursor-state' {
+        if ([DshCu.Native]::CursorIsShowing()) { Write-Output 'CURSOR_VISIBLE' } else { Write-Output 'CURSOR_HIDDEN' }
     }
     'overlay' {
         if ($A1 -eq 'stop' -or $A1 -eq 'restore-cursor') {

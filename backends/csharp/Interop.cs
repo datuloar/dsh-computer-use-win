@@ -35,6 +35,9 @@ public struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public
 [StructLayout(LayoutKind.Sequential)]
 public struct BLENDFUNCTION { public byte BlendOp; public byte BlendFlags; public byte SourceConstantAlpha; public byte AlphaFormat; }
 
+[StructLayout(LayoutKind.Sequential)]
+public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
+
 public static class Native
 {
     public const int WH_KEYBOARD_LL = 13;
@@ -60,10 +63,7 @@ public static class Native
     public const uint KEYEVENTF_KEYUP = 0x0002;
     public const uint KEYEVENTF_UNICODE = 0x0004;
 
-    public static readonly uint[] StandardCursorIds = new uint[]
-    {
-        32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32650, 32651,
-    };
+    public const int CursorShowing = 0x00000001;
 
     public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -181,6 +181,17 @@ public static class Native
     {
         try { return (int)GetDpiForSystem(); }
         catch (EntryPointNotFoundException) { return 96; }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorInfo(ref CURSORINFO info);
+
+    public static bool CursorIsShowing()
+    {
+        CURSORINFO info = new CURSORINFO();
+        info.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+        if (!GetCursorInfo(ref info)) return false;
+        return (info.flags & CursorShowing) != 0;
     }
 
     public static int LastInputTick()
