@@ -26,6 +26,7 @@ public class Indicator : ApplicationContext
     private IntPtr _hook;
     private Native.LowLevelKeyboardProc _hookProc;
     private bool _finished;
+    private bool _escaped;
     private bool _touchSeen;
     private int _ticks;
     private long _actionStamp;
@@ -78,6 +79,7 @@ public class Indicator : ApplicationContext
     {
         if (code >= 0 && IsEscapeKeyDown(wParam, lParam))
         {
+            _escaped = true;
             _finished = true;
             return (IntPtr)1;
         }
@@ -116,6 +118,7 @@ public class Indicator : ApplicationContext
     {
         if (_finished || System.IO.File.Exists(StateFiles.Stop))
         {
+            if (_escaped) StateFiles.Write(StateFiles.HumanStop, DateTime.UtcNow.ToString("O"));
             StateFiles.Delete(StateFiles.Stop);
             ExitThread();
             return true;

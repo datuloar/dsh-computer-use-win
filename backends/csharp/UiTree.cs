@@ -6,6 +6,7 @@ public static class UiTree
     public const int DefaultDepth = 6;
 
     private const int NodeCap = 400;
+    private const int TreeCap = 120;
     private const int MatchCap = 20;
     private const int SearchDepth = 14;
     private const int WarmupMs = 260;
@@ -63,11 +64,17 @@ public static class UiTree
 
     public static string Dump(AutomationElement window, int maxDepth, bool all, bool json)
     {
-        List<Node> nodes = Collect(window, maxDepth, all, NodeCap);
+        List<Node> nodes = Collect(window, maxDepth, all, TreeCap + 1);
+        bool truncated = nodes.Count > TreeCap;
+        if (truncated) nodes.RemoveAt(nodes.Count - 1);
         if (json) return Json(nodes);
         StringBuilder text = new StringBuilder();
         text.AppendLine("TREE " + Describe(window) + " (" + nodes.Count + " elements, depth " + maxDepth + ")");
         for (int index = 0; index < nodes.Count; index++) text.AppendLine(nodes[index].Line());
+        if (truncated)
+        {
+            text.AppendLine("... cut at " + TreeCap + " elements: narrow it with dsh-cu find <text> or a smaller --depth");
+        }
         return text.ToString().TrimEnd();
     }
 

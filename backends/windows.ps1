@@ -25,40 +25,41 @@ Add-Type -AssemblyName System.Windows.Forms
 
 $operands = New-Object System.Collections.ArrayList
 
-if ($env:DSH_CU_ARGV) {
-    $argv = @((ConvertFrom-Json $env:DSH_CU_ARGV))
-    $Command = [string]$argv[0]
-    for ($index = 1; $index -lt $argv.Count; $index++) {
-        $argument = [string]$argv[$index]
+function Set-Invocation {
+    param([object[]]$Arguments)
+    $script:Command = [string]$Arguments[0]
+    $script:operands = New-Object System.Collections.ArrayList
+    $script:Announce = 8
+    $script:Depth = 6
+    $script:TargetPid = ''
+    $script:TargetTitle = ''
+    $script:Language = ''
+    $script:Quiet = $false
+    $script:Horizontal = $false
+    $script:HideCursor = $false
+    $script:All = $false
+    $script:Json = $false
+    for ($index = 1; $index -lt $Arguments.Count; $index++) {
+        $argument = [string]$Arguments[$index]
+        $next = if ($index + 1 -lt $Arguments.Count) { [string]$Arguments[$index + 1] } else { $null }
         switch ($argument) {
-            '-Announce' {
-                $index++
-                if ($index -lt $argv.Count) { $Announce = [int]$argv[$index] }
-            }
-            '-Depth' {
-                $index++
-                if ($index -lt $argv.Count) { $Depth = [int]$argv[$index] }
-            }
-            '-TargetPid' {
-                $index++
-                if ($index -lt $argv.Count) { $TargetPid = [string]$argv[$index] }
-            }
-            '-TargetTitle' {
-                $index++
-                if ($index -lt $argv.Count) { $TargetTitle = [string]$argv[$index] }
-            }
-            '-Language' {
-                $index++
-                if ($index -lt $argv.Count) { $Language = [string]$argv[$index] }
-            }
-            '-Quiet' { $Quiet = $true }
-            '-HideCursor' { $HideCursor = $true }
-            '-All' { $All = $true }
-            '-Json' { $Json = $true }
-            '--horizontal' { $Horizontal = $true }
-            default { [void]$operands.Add($argument) }
+            '-Announce' { $index++; if ($null -ne $next) { $script:Announce = [int]$next } }
+            '-Depth' { $index++; if ($null -ne $next) { $script:Depth = [int]$next } }
+            '-TargetPid' { $index++; if ($null -ne $next) { $script:TargetPid = $next } }
+            '-TargetTitle' { $index++; if ($null -ne $next) { $script:TargetTitle = $next } }
+            '-Language' { $index++; if ($null -ne $next) { $script:Language = $next } }
+            '-Quiet' { $script:Quiet = $true }
+            '-HideCursor' { $script:HideCursor = $true }
+            '-All' { $script:All = $true }
+            '-Json' { $script:Json = $true }
+            '--horizontal' { $script:Horizontal = $true }
+            default { [void]$script:operands.Add($argument) }
         }
     }
+}
+
+if ($env:DSH_CU_ARGV) {
+    Set-Invocation @((ConvertFrom-Json $env:DSH_CU_ARGV))
     Remove-Item Env:\DSH_CU_ARGV -ErrorAction SilentlyContinue
 } else {
     foreach ($argument in @($A1, $A2, $A3, $A4, $A5, $A6)) {
@@ -67,7 +68,7 @@ if ($env:DSH_CU_ARGV) {
 }
 
 function Arg([int]$index) {
-    if ($index -lt $operands.Count) { return [string]$operands[$index] }
+    if ($index -lt $script:operands.Count) { return [string]$script:operands[$index] }
     return ''
 }
 
@@ -351,257 +352,297 @@ function Save-Screenshot([string]$path, [System.Drawing.Rectangle]$area) {
     Write-Output ("CAPTURED " + $area.Width + "x" + $area.Height + " at " + $area.X + "," + $area.Y)
 }
 
-$label = Get-ActionLabel
-if ($label) { [DshCu.StateFiles]::Write($actionFile, $label) }
+function Invoke-Dispatch {
+    if ($script:Serving -and (($Command -eq 'overlay' -and (Arg 0) -notin @('stop', 'restore-cursor')) -or
+            $Command -in @('broker-loop', 'serve'))) {
+        throw "$Command runs in its own process and cannot be sent to a serving backend"
+    }
+    $label = Get-ActionLabel
+    if ($label) { [DshCu.StateFiles]::Write($actionFile, $label) }
 
-switch ($Command) {
-    'shot' {
-        $path = Arg 0
-        if ([string]::IsNullOrWhiteSpace($path)) { throw 'shot needs a destination path' }
-        Save-Screenshot $path (Get-CaptureArea 1)
-    }
-    'read' {
-        $reading = Read-ScreenText (Get-CaptureArea 0)
-        if ($Json) {
-            Write-Output (ConvertTo-Json -InputObject ([pscustomobject]@{
-                language = $reading.language
-                lines = @($reading.lines)
-            }) -Depth 4 -Compress)
-        } else {
-            Write-Output ("READ " + @($reading.lines).Count + " lines (" + $reading.language + ", " +
-                $reading.area.Width + "x" + $reading.area.Height + " at " + $reading.area.X + "," + $reading.area.Y + ")")
-            foreach ($line in $reading.lines) {
-                Write-Output ("[" + $line.x + "," + $line.y + "] " + $line.text)
-            }
+    switch ($Command) {
+        'shot' {
+            $path = Arg 0
+            if ([string]::IsNullOrWhiteSpace($path)) { throw 'shot needs a destination path' }
+            Save-Screenshot $path (Get-CaptureArea 1)
         }
-    }
-    'tree' {
-        Write-Output ([DshCu.UiTree]::Dump((Resolve-UiWindow), $Depth, [bool]$All, [bool]$Json))
-    }
-    'find' {
-        $needle = Arg 0
-        if ([string]::IsNullOrWhiteSpace($needle)) { throw 'find needs the text to look for' }
-        Write-Output ([DshCu.UiTree]::Search((Resolve-UiWindow), $needle, [bool]$Json))
-    }
-    'tap' {
-        $needle = Arg 0
-        if ([string]::IsNullOrWhiteSpace($needle)) { throw 'tap needs the name of the control to click' }
-        $window = Resolve-UiWindow
-        $node = [DshCu.UiTree]::Only($window, $needle)
-        [DshCu.UiTree]::EnsureVisibleAt($window, $node.CenterX, $node.CenterY)
-        [DshCu.InputInjector]::Click($node.CenterX, $node.CenterY, 'left')
-        Write-Output ("TAPPED " + $node.Role + " '" + $node.Label() + "' at " + $node.CenterX + "," + $node.CenterY)
-    }
-    'move' { [DshCu.InputInjector]::Move((Test-Integer (Arg 0) 'x'), (Test-Integer (Arg 1) 'y')) }
-    'click' {
-        $mode = if (Arg 2) { Arg 2 } else { 'left' }
-        [DshCu.InputInjector]::Click((Test-Integer (Arg 0) 'x'), (Test-Integer (Arg 1) 'y'), $mode)
-    }
-    'drag' {
-        [DshCu.InputInjector]::Drag(
-            (Test-Integer (Arg 0) 'x'),
-            (Test-Integer (Arg 1) 'y'),
-            (Test-Integer (Arg 2) 'to x'),
-            (Test-Integer (Arg 3) 'to y'))
-    }
-    'wheel' {
-        $delta = Test-Integer (Arg 0) 'delta'
-        $at = (Arg 1) -and (Arg 2)
-        if ($Horizontal) {
-            if ($at) {
-                [DshCu.InputInjector]::WheelHorizontalAt((Test-Integer (Arg 1) 'x'), (Test-Integer (Arg 2) 'y'), $delta)
+        'read' {
+            $reading = Read-ScreenText (Get-CaptureArea 0)
+            if ($Json) {
+                Write-Output (ConvertTo-Json -InputObject ([pscustomobject]@{
+                    language = $reading.language
+                    lines = @($reading.lines)
+                }) -Depth 4 -Compress)
             } else {
-                [DshCu.InputInjector]::WheelHorizontal($delta)
+                Write-Output ("READ " + @($reading.lines).Count + " lines (" + $reading.language + ", " +
+                    $reading.area.Width + "x" + $reading.area.Height + " at " + $reading.area.X + "," + $reading.area.Y + ")")
+                foreach ($line in $reading.lines) {
+                    Write-Output ("[" + $line.x + "," + $line.y + "] " + $line.text)
+                }
             }
-        } elseif ($at) {
-            [DshCu.InputInjector]::WheelAt((Test-Integer (Arg 1) 'x'), (Test-Integer (Arg 2) 'y'), $delta)
-        } else {
-            [DshCu.InputInjector]::Wheel($delta)
         }
-    }
-    'type' { [DshCu.InputInjector]::Type((Arg 0)) }
-    'key' { [DshCu.InputInjector]::Key((Arg 0), (Arg 1)) }
-    'keys' {
-        $combo = Arg 0
-        $parts = $combo -split '\+'
-        $modifiers = @('ctrl', 'shift', 'alt', 'win')
-        $held = @()
-        for ($index = 0; $index -lt $parts.Count - 1; $index++) {
-            $name = $parts[$index].Trim()
-            if ($modifiers -notcontains $name.ToLowerInvariant()) { throw "unknown modifier: $name" }
-            [DshCu.InputInjector]::Press($name)
-            $held += $name
+        'tree' {
+            Write-Output ([DshCu.UiTree]::Dump((Resolve-UiWindow), $Depth, [bool]$All, [bool]$Json))
         }
-        $tapKey = $parts[-1].Trim()
-        [DshCu.InputInjector]::Press($tapKey)
-        [DshCu.InputInjector]::Release($tapKey)
-        for ($index = $held.Count - 1; $index -ge 0; $index--) { [DshCu.InputInjector]::Release($held[$index]) }
-        Write-Output ('KEYS ' + $combo)
-    }
-    'clipboard' {
-        $action = Arg 0
-        if ($action -eq 'set') {
-            Set-Clipboard -Value (Arg 1)
-            Write-Output 'CLIPBOARD SET'
-        } elseif ($action -eq 'clear') {
-            try { [System.Windows.Forms.Clipboard]::Clear() }
-            catch { Set-Clipboard -Value ' ' }
-            Write-Output 'CLIPBOARD CLEARED'
-        } else {
-            Write-Output ('CLIPBOARD ' + (Get-Clipboard -Raw))
+        'find' {
+            $needle = Arg 0
+            if ([string]::IsNullOrWhiteSpace($needle)) { throw 'find needs the text to look for' }
+            Write-Output ([DshCu.UiTree]::Search((Resolve-UiWindow), $needle, [bool]$Json))
         }
-    }
-    'pos' {
-        $point = New-Object DshCu.POINT
-        [void][DshCu.Native]::GetCursorPos([ref]$point)
-        Write-Output ("CURSOR " + $point.X + "," + $point.Y)
-        Write-Output ("FOREGROUND " + [DshCu.Native]::ForegroundWindowTitle())
-    }
-    'windows' {
-        Get-VisibleWindow | Select-Object Id, ProcessName, MainWindowTitle |
-            Format-Table -AutoSize | Out-String -Width 200
-    }
-    'windows-json' {
-        $entries = @(Get-VisibleWindow | ForEach-Object {
-            $rect = New-Object DshCu.RECT
-            [void][DshCu.Native]::GetWindowRect($_.MainWindowHandle, [ref]$rect)
-            [pscustomobject]@{
-                pid = $_.Id
-                title = $_.MainWindowTitle
-                left = $rect.Left
-                top = $rect.Top
-                width = $rect.Right - $rect.Left
-                height = $rect.Bottom - $rect.Top
+        'tap' {
+            $needle = Arg 0
+            if ([string]::IsNullOrWhiteSpace($needle)) { throw 'tap needs the name of the control to click' }
+            $window = Resolve-UiWindow
+            $node = [DshCu.UiTree]::Only($window, $needle)
+            [DshCu.UiTree]::EnsureVisibleAt($window, $node.CenterX, $node.CenterY)
+            [DshCu.InputInjector]::Click($node.CenterX, $node.CenterY, 'left')
+            Write-Output ("TAPPED " + $node.Role + " '" + $node.Label() + "' at " + $node.CenterX + "," + $node.CenterY)
+        }
+        'move' { [DshCu.InputInjector]::Move((Test-Integer (Arg 0) 'x'), (Test-Integer (Arg 1) 'y')) }
+        'click' {
+            $mode = if (Arg 2) { Arg 2 } else { 'left' }
+            [DshCu.InputInjector]::Click((Test-Integer (Arg 0) 'x'), (Test-Integer (Arg 1) 'y'), $mode)
+        }
+        'drag' {
+            [DshCu.InputInjector]::Drag(
+                (Test-Integer (Arg 0) 'x'),
+                (Test-Integer (Arg 1) 'y'),
+                (Test-Integer (Arg 2) 'to x'),
+                (Test-Integer (Arg 3) 'to y'))
+        }
+        'wheel' {
+            $delta = Test-Integer (Arg 0) 'delta'
+            $at = (Arg 1) -and (Arg 2)
+            if ($Horizontal) {
+                if ($at) {
+                    [DshCu.InputInjector]::WheelHorizontalAt((Test-Integer (Arg 1) 'x'), (Test-Integer (Arg 2) 'y'), $delta)
+                } else {
+                    [DshCu.InputInjector]::WheelHorizontal($delta)
+                }
+            } elseif ($at) {
+                [DshCu.InputInjector]::WheelAt((Test-Integer (Arg 1) 'x'), (Test-Integer (Arg 2) 'y'), $delta)
+            } else {
+                [DshCu.InputInjector]::Wheel($delta)
+            }
+        }
+        'type' { [DshCu.InputInjector]::Type((Arg 0)) }
+        'key' { [DshCu.InputInjector]::Key((Arg 0), (Arg 1)) }
+        'keys' {
+            $combo = Arg 0
+            $parts = $combo -split '\+'
+            $modifiers = @('ctrl', 'shift', 'alt', 'win')
+            $held = @()
+            for ($index = 0; $index -lt $parts.Count - 1; $index++) {
+                $name = $parts[$index].Trim()
+                if ($modifiers -notcontains $name.ToLowerInvariant()) { throw "unknown modifier: $name" }
+                [DshCu.InputInjector]::Press($name)
+                $held += $name
+            }
+            $tapKey = $parts[-1].Trim()
+            [DshCu.InputInjector]::Press($tapKey)
+            [DshCu.InputInjector]::Release($tapKey)
+            for ($index = $held.Count - 1; $index -ge 0; $index--) { [DshCu.InputInjector]::Release($held[$index]) }
+            Write-Output ('KEYS ' + $combo)
+        }
+        'clipboard' {
+            $action = Arg 0
+            if ($action -eq 'set') {
+                Set-Clipboard -Value (Arg 1)
+                Write-Output 'CLIPBOARD SET'
+            } elseif ($action -eq 'clear') {
+                try { [System.Windows.Forms.Clipboard]::Clear() }
+                catch { Set-Clipboard -Value ' ' }
+                Write-Output 'CLIPBOARD CLEARED'
+            } else {
+                Write-Output ('CLIPBOARD ' + (Get-Clipboard -Raw))
+            }
+        }
+        'pos' {
+            $point = New-Object DshCu.POINT
+            [void][DshCu.Native]::GetCursorPos([ref]$point)
+            Write-Output ("CURSOR " + $point.X + "," + $point.Y)
+            Write-Output ("FOREGROUND " + [DshCu.Native]::ForegroundWindowTitle())
+        }
+        'windows' {
+            Get-VisibleWindow | Select-Object Id, ProcessName, MainWindowTitle |
+                Format-Table -AutoSize | Out-String -Width 200
+        }
+        'windows-json' {
+            $entries = @(Get-VisibleWindow | ForEach-Object {
+            if ([DshCu.Native]::IsIconic($_.MainWindowHandle)) {
+                [pscustomobject]@{ pid = $_.Id; title = $_.MainWindowTitle; minimized = $true }
+            } else {
+                $rect = New-Object DshCu.RECT
+                [void][DshCu.Native]::GetWindowRect($_.MainWindowHandle, [ref]$rect)
+                [pscustomobject]@{
+                    pid = $_.Id
+                    title = $_.MainWindowTitle
+                    left = $rect.Left
+                    top = $rect.Top
+                    width = $rect.Right - $rect.Left
+                    height = $rect.Bottom - $rect.Top
+                }
             }
         })
-        if ($entries.Count -eq 0) { Write-Output '[]' }
-        else { Write-Output (ConvertTo-Json -InputObject $entries -Compress) }
-    }
-    'display' {
-        $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        Write-Output ("DISPLAY " + $bounds.Width + "x" + $bounds.Height + " dpi=" + [DshCu.Native]::SystemDpi())
-    }
-    'focus' {
-        $target = Test-Integer (Arg 0) 'pid'
-        Set-Foreground (Get-Process -Id $target -ErrorAction Stop)
-    }
-    'focus-title' {
-        $match = Get-VisibleWindow (Arg 0) | Select-Object -First 1
-        if (-not $match) { throw "no window title contains $(Arg 0)" }
-        Set-Foreground $match
-    }
-    'wait-window' {
-        $title = Arg 0
-        $seconds = if (Arg 1) { Test-Integer (Arg 1) 'seconds' } else { 15 }
-        $deadline = (Get-Date).AddSeconds($seconds)
-        while ((Get-Date) -lt $deadline) {
-            $match = Get-VisibleWindow $title | Select-Object -First 1
-            if ($match) {
-                Set-Foreground $match
-                exit 0
-            }
-            Start-Sleep -Milliseconds 400
+            if ($entries.Count -eq 0) { Write-Output '[]' }
+            else { Write-Output (ConvertTo-Json -InputObject $entries -Compress) }
         }
-        throw "no window title contains $title within $seconds seconds"
-    }
-    'broker-start' {
-        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'broker-loop')
-        Start-Process powershell -Verb RunAs -ArgumentList $arguments | Out-Null
-        Write-Output 'BROKER_STARTED'
-    }
-    'broker-loop' {
-        Remove-Item $brokerStop -Force -ErrorAction SilentlyContinue
-        Remove-Item $brokerAnswers -Force -ErrorAction SilentlyContinue
-        while (-not (Test-Path $brokerStop)) {
-            Set-Content -Path $brokerReady -Value ([DateTime]::Now.ToString('O'))
-            $request = Get-ChildItem $brokerRequests -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime | Select-Object -First 1
-            if (-not $request) {
+        'display' {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            Write-Output ("DISPLAY " + $bounds.Width + "x" + $bounds.Height + " dpi=" + [DshCu.Native]::SystemDpi())
+        }
+        'focus' {
+            $target = Test-Integer (Arg 0) 'pid'
+            Set-Foreground (Get-Process -Id $target -ErrorAction Stop)
+        }
+        'focus-title' {
+            $match = Get-VisibleWindow (Arg 0) | Select-Object -First 1
+            if (-not $match) { throw "no window title contains $(Arg 0)" }
+            Set-Foreground $match
+        }
+        'wait-window' {
+            $title = Arg 0
+            $seconds = if (Arg 1) { Test-Integer (Arg 1) 'seconds' } else { 15 }
+            $deadline = (Get-Date).AddSeconds($seconds)
+            while ((Get-Date) -lt $deadline) {
+                $match = Get-VisibleWindow $title | Select-Object -First 1
+                if ($match) {
+                    Set-Foreground $match
+                    return
+                }
+                Start-Sleep -Milliseconds 400
+            }
+            throw "no window title contains $title within $seconds seconds"
+        }
+        'broker-start' {
+            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'broker-loop')
+            Start-Process powershell -Verb RunAs -ArgumentList $arguments | Out-Null
+            Write-Output 'BROKER_STARTED'
+        }
+        'broker-loop' {
+            Remove-Item $brokerStop -Force -ErrorAction SilentlyContinue
+            Remove-Item $brokerAnswers -Force -ErrorAction SilentlyContinue
+            while (-not (Test-Path $brokerStop)) {
+                Set-Content -Path $brokerReady -Value ([DateTime]::Now.ToString('O'))
+                $request = Get-ChildItem $brokerRequests -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime | Select-Object -First 1
+                if (-not $request) {
+                    Start-Sleep -Milliseconds 150
+                    continue
+                }
+                $payload = Get-StateText $request.FullName
+                $responsePath = [DshCu.StateFiles]::InTemp(($request.Name -replace '\.req\.', '.res.'))
+                Remove-Item $request.FullName -Force -ErrorAction SilentlyContinue
+                $result = ''
+                try {
+                    $env:DSH_CU_ARGV = $payload
+                    $result = (& powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath 2>&1 | Out-String)
+                    Remove-Item Env:\DSH_CU_ARGV -ErrorAction SilentlyContinue
+                } catch {
+                    $result = 'ERROR ' + $_.Exception.Message
+                }
+                Set-Content -Path $responsePath -Value $result -Encoding UTF8
+            }
+            Remove-Item $brokerReady, $brokerStop -Force -ErrorAction SilentlyContinue
+            Remove-Item $brokerAnswers -Force -ErrorAction SilentlyContinue
+            Write-Output 'BROKER_STOPPED'
+        }
+        'broker-stop' {
+            Set-Content -Path $brokerStop -Value 'stop'
+            for ($attempt = 0; $attempt -lt 40; $attempt++) {
                 Start-Sleep -Milliseconds 150
-                continue
+                if (-not (Test-Path $brokerReady)) { break }
             }
-            $payload = Get-StateText $request.FullName
-            $responsePath = [DshCu.StateFiles]::InTemp(($request.Name -replace '\.req\.', '.res.'))
-            Remove-Item $request.FullName -Force -ErrorAction SilentlyContinue
-            $result = ''
+            Remove-Item $brokerReady, $brokerStop -Force -ErrorAction SilentlyContinue
+            Write-Output 'BROKER_STOPPED'
+        }
+        'broker-state' {
+            if ((Get-StateAge $brokerReady) -lt $FreshSeconds) { Write-Output 'BROKER_RUNNING' }
+            else { Write-Output 'BROKER_STOPPED' }
+        }
+        'run' {
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             try {
-                $env:DSH_CU_ARGV = $payload
-                $result = (& powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath 2>&1 | Out-String)
-                Remove-Item Env:\DSH_CU_ARGV -ErrorAction SilentlyContinue
-            } catch {
-                $result = 'ERROR ' + $_.Exception.Message
+                $output = (& cmd /c (Arg 0) 2>&1 | ForEach-Object {
+                    if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { $_ }
+                } | Out-String)
+            } finally {
+                $ErrorActionPreference = $previous
             }
-            Set-Content -Path $responsePath -Value $result -Encoding UTF8
+            $code = $LASTEXITCODE
+            Write-Output $output.TrimEnd()
+            Write-Output ("EXIT " + $code)
         }
-        Remove-Item $brokerReady, $brokerStop -Force -ErrorAction SilentlyContinue
-        Remove-Item $brokerAnswers -Force -ErrorAction SilentlyContinue
-        Write-Output 'BROKER_STOPPED'
-    }
-    'broker-stop' {
-        Set-Content -Path $brokerStop -Value 'stop'
-        for ($attempt = 0; $attempt -lt 40; $attempt++) {
-            Start-Sleep -Milliseconds 150
-            if (-not (Test-Path $brokerReady)) { break }
-        }
-        Remove-Item $brokerReady, $brokerStop -Force -ErrorAction SilentlyContinue
-        Write-Output 'BROKER_STOPPED'
-    }
-    'broker-state' {
-        if ((Get-StateAge $brokerReady) -lt $FreshSeconds) { Write-Output 'BROKER_RUNNING' }
-        else { Write-Output 'BROKER_STOPPED' }
-    }
-    'run' {
-        $previous = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $output = (& cmd /c (Arg 0) 2>&1 | ForEach-Object {
-                if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { $_ }
-            } | Out-String)
-        } finally {
-            $ErrorActionPreference = $previous
-        }
-        $code = $LASTEXITCODE
-        Write-Output $output.TrimEnd()
-        Write-Output ("EXIT " + $code)
-    }
-    'overlay-start' {
-        Clear-Indicator
-        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'overlay', '-Announce', "$Announce")
-        if ($Quiet) { $arguments += '-Quiet' }
-        if ($HideCursor) { $arguments += '-HideCursor' }
-        Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden | Out-Null
-        for ($attempt = 0; $attempt -lt 60; $attempt++) {
-            Start-Sleep -Milliseconds 250
-            if ((Get-StateAge $aliveFile) -lt $FreshSeconds) {
-                Write-Output 'RUNNING'
-                exit 0
-            }
-        }
-        throw 'the indicator did not come up'
-    }
-    'overlay-state' {
-        if ((Get-StateAge $aliveFile) -gt $FreshSeconds) { Write-Output 'STOPPED' } else { Write-Output 'RUNNING' }
-        exit 0
-    }
-    'cursor-state' {
-        if (Test-Path $cursorFile) { Write-Output 'CURSOR_REPLACED' }
-        elseif ([DshCu.Native]::CursorIsShowing()) { Write-Output 'CURSOR_VISIBLE' }
-        else { Write-Output 'CURSOR_HIDDEN_BY_OTHER' }
-    }
-    'overlay' {
-        $mode = Arg 0
-        if ($mode -eq 'stop' -or $mode -eq 'restore-cursor') {
-            if ($mode -eq 'stop') { Set-Content -Path $stopFile -Value ([DateTime]::Now.ToString('O')) }
+        'overlay-start' {
             Clear-Indicator
-            if ($mode -eq 'stop') { Write-Output 'STOPPED' } else { Write-Output 'CURSOR_RESTORED' }
-            exit 0
+            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'overlay', '-Announce', "$Announce")
+            if ($Quiet) { $arguments += '-Quiet' }
+            if ($HideCursor) { $arguments += '-HideCursor' }
+            Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+                Start-Sleep -Milliseconds 250
+                if ((Get-StateAge $aliveFile) -lt $FreshSeconds) {
+                    Write-Output 'RUNNING'
+                    return
+                }
+            }
+            throw 'the indicator did not come up'
         }
-        if (Test-Path $stopFile) { Remove-Item $stopFile -Force }
-        Clear-Indicator
-        $context = New-Object DshCu.Indicator($Quiet, $Announce, [bool]$HideCursor)
-        [System.Windows.Forms.Application]::Run($context)
-        [DshCu.SystemCursors]::Restore() | Out-Null
-        Write-Output 'OVERLAY_CLOSED'
+        'overlay-state' {
+            if ((Get-StateAge $aliveFile) -gt $FreshSeconds) { Write-Output 'STOPPED' } else { Write-Output 'RUNNING' }
+            return
+        }
+        'cursor-state' {
+            if (Test-Path $cursorFile) { Write-Output 'CURSOR_REPLACED' }
+            elseif ([DshCu.Native]::CursorIsShowing()) { Write-Output 'CURSOR_VISIBLE' }
+            else { Write-Output 'CURSOR_HIDDEN_BY_OTHER' }
+        }
+        'overlay' {
+            $mode = Arg 0
+            if ($mode -eq 'stop' -or $mode -eq 'restore-cursor') {
+                if ($mode -eq 'stop') { Set-Content -Path $stopFile -Value ([DateTime]::Now.ToString('O')) }
+                Clear-Indicator
+                if ($mode -eq 'stop') { Write-Output 'STOPPED' } else { Write-Output 'CURSOR_RESTORED' }
+                return
+            }
+            if (Test-Path $stopFile) { Remove-Item $stopFile -Force }
+            Clear-Indicator
+            $context = New-Object DshCu.Indicator($Quiet, $Announce, [bool]$HideCursor)
+            [System.Windows.Forms.Application]::Run($context)
+            [DshCu.SystemCursors]::Restore() | Out-Null
+            Write-Output 'OVERLAY_CLOSED'
+        }
+        default { throw "unknown command: $Command" }
     }
-    default { throw "unknown command: $Command" }
+}
+
+function Invoke-Serve {
+    $script:Serving = $true
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    $end = [string][char]0x1E + 'DSH-CU-END'
+    [Console]::Out.WriteLine($end + ' READY')
+    [Console]::Out.Flush()
+    while ($true) {
+        $line = [Console]::In.ReadLine()
+        if ($null -eq $line) { break }
+        if ($line.Trim().Length -eq 0) { continue }
+        $status = 0
+        try {
+            Set-Invocation @((ConvertFrom-Json $line))
+            Invoke-Dispatch | ForEach-Object { [Console]::Out.WriteLine([string]$_) }
+        } catch {
+            [Console]::Out.WriteLine('ERROR ' + $_.Exception.Message)
+            $status = 1
+        }
+        [Console]::Out.WriteLine($end + ' ' + $status)
+        [Console]::Out.Flush()
+    }
+}
+
+$Serving = $false
+if ($Command -eq 'serve') {
+    Invoke-Serve
+} else {
+    Invoke-Dispatch
 }

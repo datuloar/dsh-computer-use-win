@@ -19,10 +19,10 @@ function fail(message) {
   process.exit(1);
 }
 
-function repairStrandedCursor() {
+async function repairStrandedCursor() {
   if (!isWindows || !cursorMayBeHidden() || indicatorProcessAlive()) return;
   try {
-    ps(['overlay', 'restore-cursor']);
+    await ps(['overlay', 'restore-cursor']);
     console.error('dsh-cu: the pointer had been left hidden by an interrupted indicator — restored it');
   } catch {
     console.error('dsh-cu: the pointer looks hidden and could not be restored — run "dsh-cu overlay --restore-cursor"');
@@ -44,7 +44,7 @@ async function main(argv) {
     return;
   }
 
-  repairStrandedCursor();
+  await repairStrandedCursor();
 
   const command = findCommand(name);
   if (command.windowsOnly !== false) {

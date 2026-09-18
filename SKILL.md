@@ -1,53 +1,63 @@
 ---
 name: dsh-computer-use
 description: >-
-  Windows computer use: screenshot the screen, click, type, scroll and focus
-  windows, with an on-screen indicator the human can see and stop with ESC.
-  Use it when the answer is not in the files, the shell or the tests — a GUI
-  must be read or driven, a UI change verified visually, or window focus, DPI
-  and permissions are in question.
+  Windows computer use: read windows as text (control tree, OCR), click
+  controls by name, type, scroll, drag and take screenshots, with an on-screen
+  indicator the human can see and stop with ESC. Use it when the answer is not
+  in the files, the shell or the tests — a GUI or a browser page must be read
+  or driven, a UI change verified, or window focus and permissions are in
+  question.
 ---
 
 # dsh-computer-use
 
 ## When to use
 
-Use it when the answer is not in the files, the shell or the tests:
+Use it when the answer is not in the files, the shell or the tests: an app, a browser page or a
+dialog must be read or driven, or a UI change must be verified. Do not use it when reading files,
+running builds or tests can answer the question.
 
-- the screen must be looked at (what an app, game, browser or error dialog shows);
-- something must be clicked, typed or scrolled in a GUI with no CLI;
-- a UI change must be verified visually;
-- window focus, DPI or permissions are in question.
+## Tools or commands
 
-Do not use it when reading files, running builds or tests can answer the question.
+If the harness lists tools named `mcp__pc__ui_tree`, `mcp__pc__tap`, `mcp__pc__click` and so on, use
+them: they are the same commands served by `dsh-cu mcp`, answer in tens of milliseconds and start the
+indicator on the first input by themselves. Otherwise call the `dsh-cu` commands below from the
+shell. Everything in this skill applies to both.
 
-## The loop
+## The loop — text first, pixels last
 
-1. `dsh-cu overlay --hide-cursor` first — the human gets an 8 s countdown and ESC cancels, and the
-   animated marker replaces their pointer so there is exactly one pointer on screen. Without the
-   flag their own cursor stays visible next to the marker. Every input command refuses to run until
-   the indicator is up, and it refuses again the moment the indicator process dies, so a killed
-   indicator never leaves the human blind while you act. If the indicator is killed while it holds
-   the pointer, the next command gives it back and says so.
-2. `dsh-cu focus <pid>` (or `dsh-cu focus --title "part of the title"`) the target window.
-3. `dsh-cu shot` and look at the image.
-4. Act on coordinates taken from that screenshot; confirm a `move` with `dsh-cu pos`.
-5. `dsh-cu shot` again. A step is done only when the second screenshot says so.
+1. `dsh-cu overlay` — the human gets an 8 s countdown and ESC cancels. Every input command refuses
+   to run until the indicator is up, and refuses again the moment it dies.
+2. `dsh-cu focus --title "part of the title"` (or `focus <pid>`) the target window.
+3. Read it as text, cheapest first:
+   - `dsh-cu tree` — roles, names and a clickable point per control. Works for most native apps and
+     for Chrome/Edge pages (the first call wakes the browser's accessibility tree, ~1 s).
+   - `dsh-cu find "save"` — only the controls whose name contains the text.
+   - `dsh-cu read --region x y w h` — Windows OCR when the window has no tree (games, canvases,
+     remote desktops). Each line comes with the point to click. Add `--lang en-US` or `--lang ru`
+     to match the UI language.
+   - `dsh-cu shot --region x y w h` — only when the question is about pixels (colour, layout, an
+     image). Crop it; a full screen is thousands of tokens.
+4. Act: `dsh-cu tap "Save"` clicks the one control with that name and refuses when the name is
+   ambiguous or the control is covered. Otherwise `click x y` on a point taken from step 3.
+5. Verify with the same cheap reader (`tree`, `find`, `read`). A step is done only when the new
+   state says so.
 6. `dsh-cu overlay --stop` when finished.
 
-`shot` writes into `%TEMP%\dsh-computer-use\` and prints `SAVED <path> <bytes>`; read that
-file with the image tool. `dsh-cu doctor` reports the capture size, the DPI and whether the
-indicator is up; `dsh-cu display` prints just the size and DPI.
+Coordinates everywhere are physical screen pixels: what `tree`, `find` and `read` print is exactly
+what `click`, `move` and `drag` expect.
 
-`type` sends a newline as Enter and a tab as Tab (so in a browser a tab moves focus, exactly as it
-would for a human), and every other character as a Unicode keystroke. Text is typed in chunks and
-the indicator is checked between them, so if the human presses ESC a long text stops within a few
-seconds. Coordinates outside ±32767 are rejected instead of being clamped to the screen edge. An
-already-running `run` command line cannot be stopped by ESC.
+Keep every answer small: the harness trims tool output past ~4 KB from the middle. `tree` stops at
+120 controls and says so; when it does, ask `find "<word>"` or lower `--depth` instead of reading
+the whole window again. `read` a region, not the screen.
 
 ## Commands
 
     dsh-cu shot [file.png] [--region <x> <y> <w> <h>]   capture the screen, or a crop of it
+    dsh-cu read [--region <x> <y> <w> <h>] [--lang <tag>] [--json]   the screen as text, a point per line
+    dsh-cu tree [--pid N | --title <text>] [--depth N] [--all] [--json]   the control tree of a window
+    dsh-cu find <text> [--pid N | --title <text>] [--json]   controls whose name contains the text
+    dsh-cu tap <text> [--pid N | --title <text>]   click the one control named like that
     dsh-cu move <x> <y>                       move the pointer
     dsh-cu click <x> <y> [left|right|middle|double|triple]   click
     dsh-cu drag <x> <y> <to-x> <to-y>         press, glide to the second point, release
@@ -65,78 +75,57 @@ already-running `run` command line cannot be stopped by ESC.
     dsh-cu overlay [--announce N] [--quiet] [--hide-cursor]   on-screen indicator, ESC stops it
     dsh-cu overlay-state                      whether the indicator is running
     dsh-cu display                            primary screen size and DPI
+    dsh-cu mcp                                serve the same tools over MCP (stdio)
     dsh-cu doctor                             what this machine can do
     dsh-cu self-test                          exercise every command
     dsh-cu overlay --stop                     stop the indicator and clean up
     dsh-cu overlay --restore-cursor           emergency cursor restore
 
-## Scrolling a page
+## Browser pages
 
-The wheel goes to whatever window is under the pointer, so give it the page:
+Chromium browsers expose links, buttons and fields through the same tree: `dsh-cu tree --title
+Chrome --depth 12`, then `tap "Sign in"`. Navigate with the keyboard, which never misses:
+`dsh-cu keys ctrl+l`, `dsh-cu type "https://example.com"`, `dsh-cu key Enter`. If the harness also
+has a browser MCP (Playwright), prefer it for heavy web work — it reads the DOM directly.
 
-    dsh-cu wheel -600 1280 700                  five notches down at 1280,700
-    dsh-cu wheel 600 1280 700                   five notches up
-    dsh-cu wheel -240 1280 700 --horizontal     sideways
+## Typing, scrolling, dragging
 
-One notch is 120 and a screenful is roughly 600–900. `--horizontal` sends a horizontal wheel event,
-so it moves the pages that really overflow sideways and is ignored by the ones that do not. When
-the page itself has focus the keyboard is often steadier: `dsh-cu key PageDown`, `dsh-cu keys
-ctrl+End` for the bottom, `dsh-cu keys ctrl+Home` for the top.
-
-Scrolling moves every coordinate you measured, so take a fresh `dsh-cu shot` before the next click
-instead of reusing the old ones.
+- `type` sends a newline as Enter and a tab as Tab, and checks the indicator between chunks, so the
+  human's ESC stops a long text within seconds.
+- The wheel goes to the window under the pointer: `dsh-cu wheel -600 1280 700` is five notches
+  down at that point. Scrolling moves every coordinate — read again before the next click.
+- `dsh-cu drag 420 300 980 300` for sliders, selections and drag-and-drop.
+- `click ... middle` opens a link in a new tab, `click ... triple` selects a line.
 
 ## What the human sees
 
-- a rounded panel at the top centre: a breathing dot, "DeepSeek is controlling your computer", the
-  command that is running ("click 640,380"), a divider and an `ESC` chip;
-- during the announcement the panel turns amber, the dot carries a countdown ring and the chip
-  reads "ESC to cancel";
-- a soft blue glow along the screen edge, rounded at the corners, breathing every 2.6 s;
-- your pointer is replaced by the white marker with `--hide-cursor`, or stays visible next to it
-  without the flag; every click leaves a ring where it landed.
+- a rounded panel at the top: "DeepSeek is controlling your computer", the command that is
+  running ("click Save"), and an `ESC` chip; amber with a countdown ring while announcing;
+- a soft blue glow along the screen edge;
+- a ring around their own pointer, which pulses where you click. Their cursor stays the only
+  pointer. With `--hide-cursor` the system cursor is blanked and a drawn arrow replaces it (for
+  screen sharing), still exactly one pointer.
 
-The panel names the command it is running, so the human can follow along without reading your
-logs. Typed text is reported as a character count, never as the text itself, so a password does
-not end up on screen. The marker is a window, so it appears in your own screenshots — that is how
-you see where the pointer is. `--quiet` draws only the marker, for pixel-accurate reads.
-
-## Dragging and cropping
-
-`dsh-cu drag 420 300 980 300` presses at the first point, glides to the second in eased steps and
-releases: sliders, selections, a file onto a folder, a canvas stroke. A drag moves whatever it
-grabbed, so take a fresh shot afterwards.
-
-`dsh-cu shot --region 1200 600 420 240` captures only that rectangle in screen coordinates
-(clipped to the screen). Use it to read one detail — a label, a spinner, a single table row —
-instead of sending the whole screen through the image tool.
-
-`dsh-cu click <x> <y> middle` and `... triple` are there too: middle click opens a link in a new
-tab, triple click selects a whole line.
+Typed text is shown as a character count, never as the text. The ring is a window, so it appears
+in your screenshots and marks where the pointer is; `--quiet` hides the panel and the glow.
 
 ## Safety
 
 - Never press anything destructive without an explicit request: deletion, installs, purchases,
   sending messages, closing other people's windows, banking or UAC dialogs.
-- One step at a time against a fresh screenshot; never a blind click series.
+- One step at a time against a fresh read of the screen; never a blind click series.
 - Never type secrets unless asked directly. `clipboard get` can expose whatever the human last
   copied — read it only when the task needs it.
-- `dsh-cu run` and `dsh-cu broker start` are for windows this process cannot reach (UIPI). They
-  run a command line, elevated when the broker is up, and `broker start` raises a UAC prompt the
-  human must approve. Use them only on an explicit request, never as a shortcut for shell work.
-- Elevated windows (UIPI) and the secure desktop (UAC, lock screen) are unreachable — say so
-  instead of fighting it.
-- `overlay --stop` is not optional: it kills the indicator, restores the cursor and removes its
-  state files. `dsh-cu overlay-state` says whether it is still running. The indicator also stops
-  itself after five minutes without a command from you.
-- `--hide-cursor` blanks the system cursor so the marker is the only pointer. The tool records that
-  state, `overlay --stop` restores it, and if the indicator is killed the next `dsh-cu` command
-  restores it and reports that it did; `dsh-cu doctor` shows whether the pointer is replaced.
+- `dsh-cu run` and `dsh-cu broker start` are for windows this process cannot reach (UIPI); use them
+  only on an explicit request, never as a shortcut for shell work.
+- Elevated windows and the secure desktop (UAC, lock screen) are unreachable — say so instead of
+  fighting it.
+- `overlay --stop` is not optional. If a pointer was hidden with `--hide-cursor` and the indicator
+  died, the next `dsh-cu` command restores it and says so.
 
 ## Limits
 
-- Windows only; every command except `doctor` and `self-test` refuses clearly elsewhere.
-- Primary monitor only, in physical pixels. No browser DOM: pixels only.
-- One step per tool call: "wiggle the mouse in a game" is out, "open, click, verify" is in.
-- Typing runs at 12 ms per character, which is what modern text controls accept reliably.
-- A screenshot is the whole screen: for a small detail, crop it before reading it.
+- Windows only, primary monitor, physical pixels.
+- The tree is UI Automation, not the DOM; some custom-drawn UIs expose nothing — use `read`.
+- OCR misreads small or low-contrast text; prefer `tree`/`tap` wherever a tree exists.
+- A minimised window has no controls on screen: `focus` it first.

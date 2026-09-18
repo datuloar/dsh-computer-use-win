@@ -2,3 +2,4 @@ node_modules/
 *.shot.png
 .shot.png
 shots/*.png
+.playwright-mcp/

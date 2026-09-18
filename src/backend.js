@@ -119,7 +119,21 @@ export function touch() {
   }
 }
 
-export function ps(args, timeoutMs = BACKEND_TIMEOUT_MS) {
+let host = null;
+
+export function powershell() {
+  return process.env.DSH_CU_POWERSHELL || 'powershell';
+}
+
+export function serveCommand() {
+  return { command: powershell(), args: [...POWERSHELL_FLAGS, 'serve'] };
+}
+
+export function useHost(instance) {
+  host = instance;
+}
+
+export async function ps(args, timeoutMs = BACKEND_TIMEOUT_MS) {
   touch();
   const payload = JSON.stringify(args);
   if (payload.length > MAX_ARGUMENT_BYTES) {
@@ -127,7 +141,8 @@ export function ps(args, timeoutMs = BACKEND_TIMEOUT_MS) {
       `this argument is too long for one call (${payload.length} bytes) — split it into smaller steps`,
     );
   }
-  return exec(process.env.DSH_CU_POWERSHELL || 'powershell', POWERSHELL_FLAGS, { DSH_CU_ARGV: payload }, timeoutMs);
+  if (host) return host.call(args, timeoutMs);
+  return exec(powershell(), POWERSHELL_FLAGS, { DSH_CU_ARGV: payload }, timeoutMs);
 }
 
 export function indicatorIsUp() {
@@ -156,6 +171,14 @@ function indicatorPid() {
 
 export function brokerIsUp() {
   return ageSeconds('dsh-cu.broker.ready') < FRESH_SECONDS;
+}
+
+export function humanStopSeconds() {
+  return ageSeconds('dsh-cu.cancelled');
+}
+
+export function forgetHumanStop() {
+  removeQuietly(temp('dsh-cu.cancelled'));
 }
 
 export function cursorMayBeHidden() {
@@ -202,7 +225,7 @@ export function brokerTimeoutMs(args, requestedMs) {
   return Math.min(120_000, 5_000 + JSON.stringify(args).length * 30);
 }
 
-export function input(args, timeoutMs) {
+export async function input(args, timeoutMs) {
   if (!brokerIsUp()) return ps(args, timeoutMs);
   return answerFromBroker(args, brokerTimeoutMs(args, timeoutMs));
 }

@@ -15,6 +15,8 @@ public static class StateFiles
 
     public static readonly string Action = InTemp("dsh-cu.action");
 
+    public static readonly string HumanStop = InTemp("dsh-cu.cancelled");
+
     public static readonly string BrokerReady = InTemp("dsh-cu.broker.ready");
 
     public static readonly string BrokerStop = InTemp("dsh-cu.broker.stop");

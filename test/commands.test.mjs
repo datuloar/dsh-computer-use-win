@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { COMMANDS, findCommand, parseOverlayFlags, parseShotArgs, renderHelp } from '../src/commands.js';
+import {
+  COMMANDS,
+  findCommand,
+  parseOverlayFlags,
+  parseReadArgs,
+  parseShotArgs,
+  parseWindowArgs,
+  renderHelp,
+} from '../src/commands.js';
 
 test('command names are unique, kebab-case and documented for --help', () => {
   const names = COMMANDS.map((command) => command.name);
@@ -25,7 +33,7 @@ test('the help lists every command and no command that does not exist', () => {
 
 test('only the command that injects input is gated', () => {
   const gated = COMMANDS.filter((command) => command.gated).map((command) => command.name).sort();
-  assert.deepEqual(gated, ['click', 'clipboard', 'drag', 'key', 'keys', 'move', 'run', 'type', 'wheel']);
+  assert.deepEqual(gated, ['click', 'clipboard', 'drag', 'key', 'keys', 'move', 'run', 'tap', 'type', 'wheel']);
 });
 
 test('doctor and self-test are the only commands that run off Windows', () => {
@@ -74,4 +82,32 @@ test('shot takes one path, an optional region, and nothing else', () => {
   assert.throws(() => parseShotArgs(['--region', '10', '20', '30', 'tall']), /must be an integer/);
   assert.throws(() => parseShotArgs(['--crop']), /unknown shot flag/);
   assert.throws(() => parseShotArgs(['one.png', 'two.png']), /writes one file/);
+});
+
+test('read takes a region, a language and --json, nothing positional', () => {
+  assert.deepEqual(parseReadArgs([]), { region: null, language: null, json: false });
+  assert.deepEqual(parseReadArgs(['--region', '1', '2', '3', '4', '--lang', 'en-US', '--json']), {
+    region: [1, 2, 3, 4],
+    language: 'en-US',
+    json: true,
+  });
+  assert.throws(() => parseReadArgs(['--lang']), /language tag/);
+  assert.throws(() => parseReadArgs(['stray']), /flags only/);
+  assert.throws(() => parseReadArgs(['--zoom', '2']), /unknown read flag/);
+});
+
+test('window flags pick one window and bound the depth', () => {
+  assert.deepEqual(parseWindowArgs(['Save', 'as', '--title', 'Notepad', '--json']), {
+    rest: ['Save', 'as'],
+    depth: null,
+    pid: null,
+    title: 'Notepad',
+    json: true,
+    all: false,
+  });
+  assert.equal(parseWindowArgs(['--pid', '42', '--depth', '3']).pid, 42);
+  assert.throws(() => parseWindowArgs(['--pid', '1', '--title', 'x']), /pass one of them/);
+  assert.throws(() => parseWindowArgs(['--depth', '0']), /between 1 and 20/);
+  assert.throws(() => parseWindowArgs(['--depth', '99']), /between 1 and 20/);
+  assert.throws(() => parseWindowArgs(['--everything']), /unknown flag/);
 });

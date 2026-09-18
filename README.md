@@ -4,10 +4,15 @@
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![platform](https://img.shields.io/badge/platform-Windows-0078D6)
 
-Windows computer use for agents: screenshot, click, type, scroll, read windows and the
-clipboard — plus an on-screen indicator the human can see and stop with **ESC**.
+Windows computer use for agents: read the screen **as text**, click controls **by name**,
+screenshot, type, scroll, drag — plus an on-screen indicator the human can see and stop with
+**ESC**.
 
 ![The indicator the human sees while an agent drives the machine](docs/indicator.png)
+
+A text-only model can drive a GUI with this: `dsh-cu tree` and `dsh-cu read` turn a window into a
+few hundred tokens of roles, names and clickable points, and `dsh-cu tap "Save"` clicks the one
+control that matches. Screenshots are there when pixels are the answer, not as the only way in.
 
 Built for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness); the CLI works
 with any agent or script. The CLI is `dsh-cu`, the skill it registers is `dsh-computer-use`, the
@@ -18,9 +23,16 @@ with the .NET Framework that ships with Windows.
 
 ## Why this one
 
+- **Cheap enough for a text-only model.** `tree` reads the control tree through UI Automation
+  (native apps, and web pages once the browser's accessibility is woken up), `read` runs the OCR
+  that ships with Windows, and both print a clickable point per line. A window costs a few hundred
+  tokens instead of a 4 MB screenshot, and no image ever leaves the machine.
 - **The human can see it and kill it.** A rounded status panel that names the command being run
-  ("click 640,380"), a glow along the screen edge and an animated pointer marker; ESC stops
-  everything. Injected ESC is ignored, so an agent cannot switch off its own indicator.
+  ("click 640,380"), a glow along the screen edge and a ring that follows the real pointer; ESC
+  stops everything. Injected ESC is ignored, so an agent cannot switch off its own indicator.
+- **One pointer, always.** The ring is drawn *around* your own cursor, so there is never a second
+  arrow chasing the first one. `--hide-cursor` is the opt-in for the other model: the drawn marker
+  becomes the only pointer on screen.
 - **Input is refused while the indicator is down.** `move`, `click`, `drag`, `wheel`, `type`,
   `key`, `keys`, `clipboard` and `run` answer with a refusal until `dsh-cu overlay` has put the
   frame on screen. That gate lives in the tool, not in the prompt.
@@ -33,8 +45,8 @@ with the .NET Framework that ships with Windows.
   nested processes; the CLI falls back to file-descriptor capture, so `dsh-cu` still works where
   a naive `spawn(..., {stdio: 'pipe'})` gets `EPERM`.
 
-What it is *not*: it has no accessibility tree (pixels only, so it needs a vision-capable path to
-ground coordinates), no multi-monitor support, no browser DOM, and no per-application allowlist.
+What it is *not*: it has no browser DOM (UI Automation sees what an app exposes, which is less
+than the DOM and more than pixels), no multi-monitor support, and no per-application allowlist.
 
 ## Install
 
@@ -75,6 +87,10 @@ dsh-cu overlay --stop                # stop and clean up
 ## Commands
 
     dsh-cu shot [file.png] [--region <x> <y> <w> <h>]   capture the screen, or a crop of it
+    dsh-cu read [--region <x> <y> <w> <h>] [--lang <tag>] [--json]   the screen as text, with a point per line
+    dsh-cu tree [--pid N | --title <text>] [--depth N] [--all] [--json]   the control tree of a window
+    dsh-cu find <text> [--pid N | --title <text>] [--json]   controls whose name contains the text
+    dsh-cu tap <text> [--pid N | --title <text>]   click the one control named like that
     dsh-cu move <x> <y>                       move the pointer
     dsh-cu click <x> <y> [left|right|middle|double|triple]   click
     dsh-cu drag <x> <y> <to-x> <to-y>         press, glide to the second point, release
@@ -92,12 +108,14 @@ dsh-cu overlay --stop                # stop and clean up
     dsh-cu overlay [--announce N] [--quiet] [--hide-cursor]   on-screen indicator, ESC stops it
     dsh-cu overlay-state                      whether the indicator is running
     dsh-cu display                            primary screen size and DPI
+    dsh-cu mcp                                serve the same tools over MCP (stdio)
     dsh-cu doctor                             what this machine can do
     dsh-cu self-test                          exercise every command
     dsh-cu overlay --stop                     stop the indicator, restore the cursor
     dsh-cu overlay --restore-cursor           emergency cursor rescue
 
-`shot` writes into `%TEMP%\dsh-computer-use\` and prints `SAVED <path> <bytes>`; `--region x y w h`
+`read`, `tree`, `find` and `tap` are the cheap path; `shot` writes into `%TEMP%\dsh-computer-use\`
+and prints `SAVED <path> <bytes>`; `--region x y w h`
 crops it to that rectangle in screen coordinates. `--quiet` draws only the pointer marker, for
 pixel-accurate reads. Arguments are handed to the backend as a JSON array, so typed text and window
 titles keep their spaces, quotes and leading dashes.
@@ -106,9 +124,101 @@ titles keep their spaces, quotes and leading dashes.
 what sliders, selections and drag-and-drop targets expect; `click` also takes `middle` and
 `triple`.
 
+## As MCP tools (DeepSeek Harness, Claude Code, opencode, Cursor)
+
+`dsh-cu mcp` serves every command as native tools over MCP stdio: `ui_tree`, `find`, `tap`,
+`read_text`, `screenshot` (returns the image), `click`, `move`, `drag`, `scroll`, `type`, `press`,
+`windows`, `focus`, `wait` and `indicator`. It keeps one backend process warm, so a call takes
+10–200 ms instead of the ~550 ms a fresh PowerShell costs, and input tools start the on-screen
+indicator by themselves the first time.
+
+DeepSeek Harness — add a row to your profile patch (`<DSH_HOME>\profiles\web\cordis.patch.yml`);
+the tools then appear as `mcp__pc__click`, `mcp__pc__ui_tree`, ...:
+
+```yaml
+- id: mcp-pc
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: pc
+    transport: stdio
+    command: node
+    args: ['C:\\path\\to\\dsh-computer-use\\src\\mcp.js']
+    toolCallTimeoutMs: 120000
+```
+
+Claude Code: `claude mcp add pc -- node C:\path\to\dsh-computer-use\src\mcp.js`.
+opencode and Cursor take the same command in their MCP settings.
+
+If the human presses ESC, the indicator records it and every input tool refuses for the next ten
+minutes with a message telling the agent to stop and ask — an agent cannot quietly restart the
+indicator it was just stopped with.
+
+## Driving a GUI without vision
+
+```powershell
+dsh-cu overlay                       # the human is warned, ESC cancels
+dsh-cu focus --title "Settings"      # pick the window
+dsh-cu tree                          # roles, names and a clickable point each
+dsh-cu tap "Bluetooth"               # click the one control with that name
+dsh-cu tree                          # verify: the tree is the new state
+```
+
+`tree` walks the window with UI Automation and prints one line per control:
+
+```
+TREE Invoice draft (6 elements, depth 6)
+  Text "Invoice draft" @1066,643
+  Edit "Customer name" @1250,754
+  Button "Save" @1075,1013
+  Button "Cancel" @1245,1013
+```
+
+`find "save"` filters that list, and `tap "Save"` clicks the single match — or refuses and prints
+the candidates when the name is ambiguous, so a wrong click is never silent. Before clicking, `tap`
+checks that the point really belongs to the target window and refuses when something covers it.
+
+Chrome, Edge and other Chromium browsers keep their accessibility tree switched off until a client
+asks for it; the first `tree` or `find` wakes the renderers and waits for the page, later calls are
+immediate. A browser window then lists its links, buttons and fields the same way, which is enough
+to drive most web UIs without a DOM. Firefox and Electron apps expose whatever they expose — check
+with `tree` before planning a run.
+
+When a window shows no tree (canvas apps, games, remote desktops, a PDF viewer), `read` falls back
+to the OCR that ships with Windows:
+
+```
+dsh-cu read --region 1200 600 420 240 --lang en-US
+READ 3 lines (en-US, 420x240 at 1200,600)
+[1310,648] Customer name
+[1288,712] Design system audit
+[1276,764] Save
+```
+
+Each line carries the point to click, small regions are upscaled before recognition, and `--lang`
+picks an installed language pack (`dsh-cu read --lang ru`). `doctor` lists what is installed.
+
+A screenshot is still the right tool when the question is about pixels — colours, layout, an image,
+a chart. Then `shot --region` keeps it small, and a vision-capable route (for DeepSeek Harness: the
+Vision Toolkit plugin) can answer questions about it.
+
 Scrolling follows the pointer, so pass it the page: `dsh-cu wheel -600 1280 700` is five notches
 down at that point, `--horizontal` scrolls sideways, and `key PageDown` / `keys ctrl+End` scroll the
 focused page. Every scroll moves the coordinates you measured — take a fresh shot before clicking.
+
+## What the human sees
+
+![The whole screen while an agent works: the status panel, the edge glow and the pointer ring](docs/screen.png)
+
+| Countdown before the first input | A click, shown where it landed |
+|---|---|
+| ![Amber panel counting down, ESC cancels](docs/countdown.png) | ![Ripple rings on the button the agent clicked](docs/pointer.png) |
+
+- The panel names the command that is running; typed text is shown as a character count only.
+- The edge glow breathes while the agent is in control and is solid during the countdown.
+- The ring follows your own pointer and pulses on every click. Screenshots never contain the
+  system cursor, which is why only the ring shows up in the images above.
+
+All images on this page were taken over a neutral demo window, not a real desktop.
 
 ## Safety model
 
@@ -123,11 +233,13 @@ focused page. Every scroll moves the coordinates you measured — take a fresh s
   rather than the text, so a typed password never appears on screen.
 - **`overlay --stop`** kills the indicator by pid file, reloads the system cursors and removes its
   state files. The indicator also stops itself after five minutes without a command.
-- **One pointer, or two.** By default your own cursor stays visible and the marker is drawn next to
-  it. `dsh-cu overlay --hide-cursor` blanks the system cursor so the animated marker is the only
-  pointer on screen; the tool records that it did, `overlay --stop` gives the pointer back, and if
-  the indicator is killed the next `dsh-cu` command restores it and says so. `dsh-cu doctor` reports
-  `cursor: visible` / `replaced by the marker` / `hidden, but not by this tool`.
+- **One pointer, never two.** By default nothing replaces your cursor: the indicator draws a ring
+  around it, so the pointer you see is the real one and the ring only says "the agent is here".
+  `dsh-cu overlay --hide-cursor` is the opt-in for screen sharing and recordings: it blanks the
+  system cursor and draws the marker arrow instead, so there is still exactly one pointer. The tool
+  records that it blanked the cursor, `overlay --stop` gives it back, and if the indicator is killed
+  the next `dsh-cu` command restores it and says so. `dsh-cu doctor` reports `cursor: visible` /
+  `replaced by the marker` / `hidden, but not by this tool`.
 - **`run` and `broker start` are the escape hatches.** `broker start` raises a UAC prompt and lets
   `run` execute a command line elevated, for windows this process cannot reach (UIPI). Both are
   gated behind the indicator and are meant for explicit human requests — the Harness already has a
@@ -141,6 +253,7 @@ focused page. Every scroll moves the coordinates you measured — take a fresh s
 |---|---|
 | `DSH_CU_ALLOW_NO_INDICATOR=1` | let input through while the indicator is down — deliberate override, nothing else bypasses the gate |
 | `DSH_CU_UI_SCALE=1.5` | scale the indicator on top of the display DPI, for a 4K panel or weak eyes (0.75–4) |
+| `DSH_CU_POWERSHELL=powershell` | the default; set it to another PowerShell only if yours lives elsewhere |
 | `DSH_CU_POWERSHELL=pwsh` | run the backend with another PowerShell executable |
 
 ## Running from inside a sandboxed agent session
@@ -166,7 +279,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File backends\windows.ps1 shot C:
   clicking it is allowed is between you and the site.
 - **Primary monitor only**, in physical pixels. The process claims per-monitor DPI awareness, so a
   screenshot is native resolution and its coordinates are the coordinates `click` expects.
-- **No browser DOM, no accessibility tree** — pixels only.
+- **The control tree is UI Automation, not the DOM.** It sees what an application exposes: most
+  native Windows apps and Chromium browsers do well, some custom-drawn UIs (games, canvases,
+  emulators) expose nothing at all. `read` (OCR) and `shot` cover those.
+- **Waking a browser's accessibility tree costs the browser some memory and CPU** while it stays
+  on, which is the price of reading a page without an extension.
+- **OCR is as good as the installed language pack** and no better: it misreads small, low-contrast
+  or decorative text. Coordinates it returns are the line's own box, so a click lands on the text,
+  not necessarily on the control behind it — prefer `tree`/`tap` where a tree exists.
 - Typing runs at 12 ms per character, which is what modern text controls accept reliably; a newline
   is sent as Enter and a tab as Tab. Coordinates outside ±32767 are refused rather than clamped.
 - The indicator is drawn on the physical screen. The panel also appears in remote-desktop

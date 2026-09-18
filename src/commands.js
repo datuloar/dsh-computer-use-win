@@ -6,6 +6,7 @@ import {
   brokerIsUp,
   cursorMayBeHidden,
   exec,
+  forgetHumanStop,
   indicatorIsUp,
   indicatorProcessAlive,
   input,
@@ -106,7 +107,7 @@ function screenshotPath(target) {
 async function runShot(args) {
   const { file: target, region } = parseShotArgs(args);
   const file = screenshotPath(target);
-  ps(['shot', file, ...(region ?? []).map(String)]);
+  await ps(['shot', file, ...(region ?? []).map(String)]);
   const size = statSync(file).size;
   const floor = region ? MIN_REGION_BYTES : MIN_SCREENSHOT_BYTES;
   if (size < floor) {
@@ -193,7 +194,7 @@ function windowFlags(options) {
 async function runRead(args) {
   const { region, language, json } = parseReadArgs(args);
   console.log(
-    ps([
+    await ps([
       'read',
       ...(region ?? []).map(String),
       ...(language ? ['-Language', language] : []),
@@ -205,35 +206,35 @@ async function runRead(args) {
 async function runTree(args) {
   const options = parseWindowArgs(args);
   if (options.rest.length > 0) throw new ToolError(`tree takes flags only, got "${options.rest[0]}"`);
-  console.log(ps(['tree', ...windowFlags(options)]));
+  console.log(await ps(['tree', ...windowFlags(options)]));
 }
 
 async function runFind(args) {
   const options = parseWindowArgs(args);
   const needle = required(options.rest.join(' '), 'the text to look for');
-  console.log(ps(['find', needle, ...windowFlags(options)]));
+  console.log(await ps(['find', needle, ...windowFlags(options)]));
 }
 
 async function runTap(args) {
   const options = parseWindowArgs(args);
   if (options.json) throw new ToolError('tap reports what it clicked, it takes no --json');
   const needle = required(options.rest.join(' '), 'the name of the control to click');
-  console.log(input(['tap', needle, ...windowFlags(options)]));
+  console.log(await input(['tap', needle, ...windowFlags(options)]));
 }
 
 async function runMove(args) {
-  console.log(input(['move', String(coordinate(args[0], 'x')), String(coordinate(args[1], 'y'))]));
+  console.log(await input(['move', String(coordinate(args[0], 'x')), String(coordinate(args[1], 'y'))]));
 }
 
 async function runClick(args) {
   const mode = oneOf(args[2] ?? 'left', CLICK_MODES, 'click mode');
-  console.log(input(['click', String(coordinate(args[0], 'x')), String(coordinate(args[1], 'y')), mode]));
+  console.log(await input(['click', String(coordinate(args[0], 'x')), String(coordinate(args[1], 'y')), mode]));
 }
 
 async function runDrag(args) {
   const from = [coordinate(args[0], 'x'), coordinate(args[1], 'y')];
   const to = [coordinate(args[2], 'to x'), coordinate(args[3], 'to y')];
-  console.log(input(['drag', ...from, ...to].map(String)));
+  console.log(await input(['drag', ...from, ...to].map(String)));
 }
 
 async function runWheel(args) {
@@ -243,67 +244,67 @@ async function runWheel(args) {
   if (delta === 0) throw new ToolError('wheel delta must not be zero');
   const [x, y] = position.slice(1);
   const target = x === undefined ? [] : [String(coordinate(x, 'x')), String(coordinate(y, 'y'))];
-  console.log(input(['wheel', String(delta), ...target, ...(horizontal ? ['--horizontal'] : [])]));
+  console.log(await input(['wheel', String(delta), ...target, ...(horizontal ? ['--horizontal'] : [])]));
 }
 
 async function runType(args) {
   const text = required(args.join(' '), 'type text');
   for (let index = 0; index < text.length; index += TYPE_CHUNK_CHARS) {
     requireIndicator();
-    console.log(input(['type', text.slice(index, index + TYPE_CHUNK_CHARS)]));
+    console.log(await input(['type', text.slice(index, index + TYPE_CHUNK_CHARS)]));
     if (index + TYPE_CHUNK_CHARS < text.length) await sleep(30);
   }
 }
 
 async function runKey(args) {
   const name = required(args[0], 'key name (Enter, Esc, Tab, Ctrl, F5, …)');
-  console.log(input(['key', name, oneOf(args[1] ?? '', KEY_PHASES, 'key phase')]));
+  console.log(await input(['key', name, oneOf(args[1] ?? '', KEY_PHASES, 'key phase')]));
 }
 
 async function runKeys(args) {
   const combo = required(args[0], 'a combination like ctrl+shift+t');
   if (!combo.includes('+')) throw new ToolError('keys needs a combination like ctrl+shift+t');
-  console.log(input(['keys', combo]));
+  console.log(await input(['keys', combo]));
 }
 
 async function runClipboard(args) {
   const action = oneOf(args[0] ?? 'get', CLIPBOARD_ACTIONS, 'clipboard action');
   if (action !== 'set') {
-    console.log(input(['clipboard', action]));
+    console.log(await input(['clipboard', action]));
     return;
   }
-  console.log(input(['clipboard', 'set', required(args.slice(1).join(' '), 'clipboard text')]));
+  console.log(await input(['clipboard', 'set', required(args.slice(1).join(' '), 'clipboard text')]));
 }
 
 async function runWindows(args) {
   if (args[0] !== undefined && args[0] !== '--json') {
     throw new ToolError(`windows takes --json or nothing, got "${args[0]}"`);
   }
-  console.log(ps([args[0] === '--json' ? 'windows-json' : 'windows']));
+  console.log(await ps([args[0] === '--json' ? 'windows-json' : 'windows']));
 }
 
 async function runFocus(args) {
   if (args[0] === '--title') {
-    console.log(ps(['focus-title', required(args.slice(1).join(' '), 'a title substring')]));
+    console.log(await ps(['focus-title', required(args.slice(1).join(' '), 'a title substring')]));
     return;
   }
-  console.log(ps(['focus', String(integer(args[0], 'pid'))]));
+  console.log(await ps(['focus', String(integer(args[0], 'pid'))]));
 }
 
 async function runWaitWindow(args) {
   const title = required(args[0], 'a title substring');
   const seconds = args[1] ? integer(args[1], 'seconds') : 15;
-  console.log(ps(['wait-window', title, String(seconds)]));
+  console.log(await ps(['wait-window', title, String(seconds)]));
 }
 
 async function runBroker(args) {
   const action = oneOf(args[0] ?? 'status', BROKER_ACTIONS, 'broker action');
   if (action !== 'status') requireIndicator();
-  console.log(ps([action === 'status' ? 'broker-state' : `broker-${action}`]));
+  console.log(await ps([action === 'status' ? 'broker-state' : `broker-${action}`]));
 }
 
 async function runRun(args) {
-  console.log(input(['run', required(args.join(' '), 'a command line')], SLOW_BACKEND_TIMEOUT_MS));
+  console.log(await input(['run', required(args.join(' '), 'a command line')], SLOW_BACKEND_TIMEOUT_MS));
 }
 
 export function parseOverlayFlags(args) {
@@ -340,14 +341,15 @@ export function parseOverlayFlags(args) {
 async function runOverlay(args) {
   const options = parseOverlayFlags(args);
   if (options.oneShot) {
-    console.log(ps(['overlay', options.oneShot]));
+    console.log(await ps(['overlay', options.oneShot]));
     return;
   }
+  forgetHumanStop();
   const extra = [
     ...(options.quiet ? ['-Quiet'] : []),
     ...(options.hideCursor ? ['-HideCursor'] : []),
   ];
-  const state = ps(['overlay-start', '-Announce', String(options.announce), ...extra]);
+  const state = await ps(['overlay-start', '-Announce', String(options.announce), ...extra]);
   if (!state.includes('RUNNING')) {
     throw new ToolError('the indicator did not come up — refusing to start input without it');
   }
@@ -360,7 +362,7 @@ async function runOverlayState() {
   console.log(indicatorIsUp() && indicatorProcessAlive() ? 'RUNNING' : 'STOPPED');
 }
 
-function runDoctor() {
+async function runDoctor() {
   const report = (label, value) => console.log(`${label.padEnd(12)}${value}`);
   const installed = (name) => {
     try {
@@ -377,21 +379,21 @@ function runDoctor() {
   report('backend:', existsSync(backendScript) ? 'present' : 'MISSING');
   report('indicator:', indicatorIsUp() ? 'RUNNING' : 'stopped');
   report('broker:', brokerIsUp() ? 'RUNNING (run is elevated)' : 'stopped');
-  report('cursor:', describeCursor());
-  report('display:', describeDisplay());
+  report('cursor:', await describeCursor());
+  report('display:', await describeDisplay());
   report('skill:', describeSkillInstall());
   report('installs:', 'none — the backend compiles itself with the bundled .NET Framework');
   report('limits:', 'elevated windows (UIPI) and the secure desktop (UAC, lock screen)');
 }
 
-function describeCursor() {
+async function describeCursor() {
   if (cursorMayBeHidden()) {
     return indicatorIsUp()
       ? 'replaced by the marker (--hide-cursor)'
       : 'HIDDEN — the next command repairs it, or run "dsh-cu overlay --restore-cursor"';
   }
   try {
-    const state = ps(['cursor-state']);
+    const state = await ps(['cursor-state']);
     if (state.includes('CURSOR_HIDDEN_BY_OTHER')) {
       return 'hidden, but not by this tool (another program holds the pointer)';
     }
@@ -401,10 +403,10 @@ function describeCursor() {
   }
 }
 
-function describeDisplay() {
+async function describeDisplay() {
   if (!isWindows || !existsSync(backendScript)) return 'unknown (not a Windows host)';
   try {
-    return ps(['display']).replace(/^DISPLAY\s+/, '');
+    return (await ps(['display'])).replace(/^DISPLAY\s+/, '');
   } catch (error) {
     return `unknown (${String(error.message).split('\n')[0]})`;
   }
@@ -414,6 +416,12 @@ function describeSkillInstall() {
   if (!process.env.DSH_HOME) return 'DSH_HOME is not set';
   const path = join(process.env.DSH_HOME, 'skills', 'dsh-computer-use', 'SKILL.md');
   return existsSync(path) ? `installed (${path})` : `not installed (${path}) — run install.ps1`;
+}
+
+async function runMcp() {
+  const { serve } = await import('./mcp.js');
+  serve();
+  await new Promise(() => undefined);
 }
 
 async function runSelfTest() {
@@ -514,7 +522,7 @@ export const COMMANDS = [
     name: 'pos',
     args: '',
     summary: 'pointer position and foreground window',
-    run: async () => console.log(ps(['pos'])),
+    run: async () => console.log(await ps(['pos'])),
   },
   {
     name: 'windows',
@@ -563,7 +571,13 @@ export const COMMANDS = [
     name: 'display',
     args: '',
     summary: 'primary screen size and DPI',
-    run: async () => console.log(ps(['display'])),
+    run: async () => console.log(await ps(['display'])),
+  },
+  {
+    name: 'mcp',
+    args: '',
+    summary: 'serve every command as MCP tools over stdio (DeepSeek Harness, Claude Code, opencode, ...)',
+    run: runMcp,
   },
   {
     name: 'doctor',

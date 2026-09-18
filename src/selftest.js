@@ -293,6 +293,34 @@ export async function runSelfTest({ root, cli, exec }) {
         return `document marked as edited: ${foregroundTitle().slice(0, 40)}`;
       });
 
+      await check('tree lists the window controls with clickable points', () => {
+        const output = cliCall(['tree', '--title', scratchName, '--depth', '8']);
+        assert(output.startsWith('TREE '), `unexpected tree output: ${output.slice(0, 120)}`);
+        const points = output.split('\n').filter((line) => / @-?\d+,-?\d+/.test(line));
+        assert(points.length >= 3, `only ${points.length} controls with a point`);
+        return `${points.length} controls`;
+      });
+
+      await check('find narrows the tree to matching names', () => {
+        const output = cliCall(['find', scratchName, '--title', scratchName]);
+        assert(/^FOUND [1-9]/.test(output), `nothing found for the file name: ${output.slice(0, 120)}`);
+        return output.split('\n')[0];
+      });
+
+      await checkSoft('tap clicks the one control with that exact name', () => {
+        const output = cliCall(['tap', scratchName, '--title', scratchName]);
+        assert(output.includes('TAPPED'), `unexpected tap output: ${output}`);
+        return output.split('\n').pop();
+      });
+
+      await checkSoft('read turns the window into text lines with points', () => {
+        const [target] = notepadWindows();
+        const region = [target.left, target.top, Math.min(target.width, 900), Math.min(target.height, 500)];
+        const output = cliCall(['read', '--region', ...region.map(String)]);
+        assert(/^READ [1-9]/.test(output), `OCR returned nothing: ${output.slice(0, 120)}`);
+        return output.split('\n')[0];
+      });
+
       await check('drag glides between two points inside the window', () => {
         const [target] = notepadWindows();
         assert(target && target.width > 200, 'no usable Notepad rectangle to drag in');
@@ -326,6 +354,43 @@ export async function runSelfTest({ root, cli, exec }) {
     }
   }
 
+  await check('the MCP server answers over stdio with a warm backend', async () => {
+    const { spawn } = await import('node:child_process');
+    const server = spawn(process.execPath, [cli, 'mcp'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    let buffer = '';
+    const replies = new Map();
+    server.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const message = JSON.parse(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        replies.get(message.id)?.(message);
+      }
+    });
+    let next = 1;
+    const call = (method, params) =>
+      new Promise((resolve) => {
+        const id = next++;
+        replies.set(id, resolve);
+        server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      });
+    try {
+      const init = await call('initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+      assert(init.result?.serverInfo?.name === 'dsh-cu', 'no server info');
+      await call('tools/call', { name: 'windows', arguments: {} });
+      const started = Date.now();
+      const warm = await call('tools/call', { name: 'windows', arguments: {} });
+      const elapsed = Date.now() - started;
+      assert(!warm.result.isError, warm.result.content[0].text);
+      assert(elapsed < 400, `a warm call took ${elapsed} ms`);
+      return `warm call ${elapsed} ms`;
+    } finally {
+      server.stdin.end();
+      server.kill();
+    }
+  });
+
   await check('bad input is rejected before it reaches the backend', () => {
     const cases = [
       [['click', 'abc', '10'], /must be an integer/],
@@ -346,6 +411,11 @@ export async function runSelfTest({ root, cli, exec }) {
       [['overlay', '--announce', '99'], /between 0 and 30/],
       [['overlay', '--stop', '--restore-cursor'], /not both/],
       [['overlay', '--stop', '--hide-cursor'], /only applies while starting/],
+      [['tree', '--depth', '0'], /between 1 and 20/],
+      [['find'], /the text to look for is required/],
+      [['read', 'stray'], /flags only/],
+      [['tap', 'Save', '--json'], /takes no --json/],
+      [['tree', '--pid', '1', '--title', 'x'], /pass one of them/],
       [['nonsense'], /unknown command/],
     ];
     process.env.DSH_CU_ALLOW_NO_INDICATOR = '1';

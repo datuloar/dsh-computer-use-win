@@ -97,7 +97,7 @@ public static class Native
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
 
     [DllImport("user32.dll")]

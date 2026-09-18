@@ -23,7 +23,10 @@ is the distribution.
 | `backends/csharp/LayeredWindow.cs` | the per-pixel-alpha window every visual layer draws into |
 | `backends/csharp/EdgeGlow.cs`, `FrameRenderer.cs` | the screen-edge glow: four strips, one bitmap each |
 | `backends/csharp/PanelForm.cs`, `PanelRenderer.cs`, `PanelState.cs` | the status pill and what it shows |
-| `backends/csharp/PointerRenderer.cs` | the marker: arrow, trail, click rings |
+| `backends/csharp/PointerRenderer.cs` | the pointer layer: ring around the real cursor (default) or the arrow that replaces it, trail, click rings |
+| `src/mcp.js` | the MCP stdio server: tool table, argument mapping onto CLI commands, auto-started indicator, ESC hold |
+| `src/host.js` | the warm backend: one `windows.ps1 serve` process, JSON lines in, output plus an end marker out |
+| `backends/csharp/UiTree.cs` | UI Automation: window lookup, the control tree, `find`/`tap` matching, the covered-window guard |
 | `SKILL.md` | what the agent reads: when to use it, the loop, the safety rules |
 | `test/*.test.mjs`, `test/run.mjs` | `node:test` suite for the pure parts |
 
@@ -120,11 +123,42 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   live in `Interop.cs`; every other file only opens `namespace DshCu`.
 - **State files are the CLI ↔ indicator contract**, all in `%TEMP%`: `dsh-cu.alive` (heartbeat),
   `dsh-cu.pid` (pid plus start ticks), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
-  `dsh-cu.action` (what the pill shows), `dsh-cu.cursor` (present while `--hide-cursor` holds the
+  `dsh-cu.action` (what the pill shows), `dsh-cu.cancelled` (the human pressed ESC), `dsh-cu.cursor` (present while `--hide-cursor` holds the
   pointer; the CLI heals leftover state), `dsh-cu.broker.ready|stop|req.*|res.*`. `StateFiles.cs`
   owns the paths and the PowerShell host reads them from there, so a name is written once. Both sides treat a heartbeat older than 5 s as "gone"; an
   indicator that never sees a touch file stops itself after the same five minutes, so a broken
   watchdog cannot leave one running forever.
+- **MCP tools are CLI commands.** Every tool in `src/mcp.js` builds a CLI argv and runs the same
+  `COMMANDS` handler, so validation, gating and output never drift between the two front ends. A
+  new tool that needs new behaviour gets a CLI command first. Tool definitions travel with every
+  model request: keep descriptions to one or two sentences (`test/mcp.test.mjs` caps the bytes).
+- **stdout belongs to the protocol.** `serve()` redirects every `console.*` into a per-call buffer;
+  a stray write to stdout would corrupt the JSON-RPC stream. Tool calls run one at a time.
+- **The warm backend never runs a blocking command.** `Invoke-Dispatch` refuses the indicator
+  loop, `broker-loop` and `serve` while serving; those start their own process. Nothing inside
+  `Invoke-Dispatch` may call `exit` — it would kill the warm host — so branches `return`.
+- **Validate before the indicator.** MCP input tools start the indicator on first use, which takes
+  the announcement seconds; `round()` rejects bad numbers before that, so a typo fails at once.
+- **ESC is a human decision.** The indicator writes `dsh-cu.cancelled` when the human presses ESC;
+  for ten minutes MCP input tools and the `indicator start` tool refuse and tell the agent to ask.
+  `dsh-cu overlay` run by hand clears it.
+- **One pointer, never two.** The default pointer layer is a ring drawn *around* the real cursor;
+  the drawn arrow only exists together with `--hide-cursor`, which blanks the system cursor. An
+  arrow next to a visible cursor was the old default and read as a second pointer chasing the
+  first — do not bring that combination back.
+- **The UIA reference set is fixed.** `Add-Type` references `UIAutomationClient`,
+  `UIAutomationTypes` and `WindowsBase`; never add `using System.Windows;` because its `Point`,
+  `Size` and `Rect` collide with `System.Drawing` — spell `System.Windows.Rect` in full.
+- **Chromium keeps its accessibility tree asleep.** `UiTree.Warmup` sends `WM_GETOBJECT` to every
+  `Chrome_RenderWidgetHostHWND` and waits until the document has children; without it the first
+  `tree` of a browser shows only the tab strip. A minimised window reports bogus rectangles, so
+  `UiTree.Usable` refuses it instead of printing coordinates that are not on screen.
+- **`tap` never clicks blind.** It clicks only a single match (exact names win over substrings) and
+  only after `EnsureVisibleAt` confirms the point belongs to the target window.
+- **OCR is WinRT and lives in PowerShell.** `Windows.Media.Ocr` has no projection for the .NET
+  Framework compiler, so `Read-ScreenText` in `backends/windows.ps1` does it with the
+  `ContentType = WindowsRuntime` type syntax and an `AsTask` awaiter. Small regions are upscaled
+  2x before recognition and every coordinate is mapped back to the screen.
 - **Cursor hiding is opt-in and always recoverable.** `overlay --hide-cursor` blanks the system
   cursors with `SetSystemCursor` (the only API that hides the pointer for the whole desktop —
   `ShowCursor` from a background process does nothing, verified); a bare `overlay` leaves the
