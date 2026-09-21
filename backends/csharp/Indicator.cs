@@ -4,7 +4,7 @@ namespace DshCu
 public class Indicator : ApplicationContext
 {
     private const int HeartbeatEveryTicks = 12;
-    private const double IdleMinutes = 5;
+    private const double IdleMinutes = 1;
     private const int AnnounceAlpha = 255;
     private const double PulseSeconds = 2.6;
     private const double GlowBase = 196;

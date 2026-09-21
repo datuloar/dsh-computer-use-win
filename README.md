@@ -87,7 +87,8 @@ dsh-cu overlay --stop                # stop and clean up
 3. `dsh-cu shot` and look at the image.
 4. Act on coordinates taken from that screenshot; confirm a `move` with `dsh-cu pos`.
 5. `dsh-cu shot` again — a step is done only when the second screenshot says so.
-6. `dsh-cu overlay --stop` when finished.
+6. `dsh-cu overlay --stop` (MCP: `indicator` with `action: "stop"`) after each GUI interaction,
+   before shell work or replying, including on failure. Do not wait for the entire project to finish.
 
 ## Commands
 
@@ -259,7 +260,7 @@ All images on this page were taken over a neutral demo window, not a real deskto
   next to the status text, so the human can follow along; `type` is reported as a character count
   rather than the text, so a typed password never appears on screen.
 - **`overlay --stop`** kills the indicator by pid file, reloads the system cursors and removes its
-  state files. The indicator also stops itself after five minutes without a command.
+  state files. The indicator also stops itself after 60 seconds without a desktop command.
 - **One pointer, never two.** By default nothing replaces your cursor: the indicator draws a ring
   around it, so the pointer you see is the real one and the ring only says "the agent is here".
   `dsh-cu overlay --hide-cursor` is the opt-in for screen sharing and recordings: it blanks the

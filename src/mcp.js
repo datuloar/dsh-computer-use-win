@@ -27,7 +27,9 @@ const INSTRUCTIONS =
   'Windows desktop control. Read before acting: ui_tree/find list controls with a point to click, ' +
   'read_text is OCR; see gives local visual answers as text even to non-vision models. Act with tap ' +
   '(by name) or click (by point), then read again to verify. Input tools start the on-screen ' +
-  'indicator by themselves; if the human pressed ESC, stop and ask them before continuing.';
+  'indicator by themselves. Call indicator with action="stop" after each desktop interaction, ' +
+  'before shell work, lengthy reasoning or a reply, including on failure. The next input starts a new countdown. ' +
+  'If the human pressed ESC, stop and ask them before continuing.';
 
 const region = {
   x: { type: 'integer', description: 'left edge of a screen region' },
@@ -216,7 +218,7 @@ export const TOOLS = [
     name: 'indicator',
     description:
       'Start or stop the on-screen indicator. Input tools start it themselves; call stop when the ' +
-      'task is done so the human gets the screen back.',
+      'desktop interaction ends, before shell work or a reply, including on failure.',
     inputSchema: schema(
       {
         action: { type: 'string', enum: ['start', 'stop'] },
@@ -367,12 +369,17 @@ export async function handle(message) {
       });
     case 'tools/call':
       return serial(async () => {
+        let result;
         try {
-          return success(id, await callTool(params?.name, params?.arguments));
+          result = await callTool(params?.name, params?.arguments);
         } catch (error) {
           const text = error instanceof ToolError ? error.message : `${error.message}`;
-          return success(id, { content: [{ type: 'text', text }], isError: true });
+          result = { content: [{ type: 'text', text }], isError: true };
         }
+        if (indicatorIsUp() && indicatorProcessAlive()) {
+          result.content.push({ type: 'text', text: 'Desktop control is still ON. Call indicator with action="stop" before switching to shell work or replying. Idle shutdown: 60s without a desktop command.' });
+        }
+        return success(id, result);
       });
     default:
       return failure(id, -32601, `method not found: ${method}`);

@@ -42,7 +42,12 @@ shell. Everything in this skill applies to both.
    ambiguous or the control is covered. Otherwise `click x y` on a point taken from step 3.
 5. Verify with the same cheap reader (`tree`, `find`, `read`). A step is done only when the new
    state says so.
-6. `dsh-cu overlay --stop` when finished.
+6. `dsh-cu overlay --stop` (MCP: `indicator` with `action: "stop"`) immediately after this GUI
+   interaction, before shell work, lengthy reasoning or replying. Stop on errors too. Do not wait
+   for the entire project or goal to finish. The next input starts a fresh countdown.
+
+The indicator shuts down after 60 seconds without a desktop command as a fallback, even if the
+agent forgets to stop. This is not a substitute for explicitly stopping when leaving the GUI.
 
 Coordinates everywhere are physical screen pixels: what `tree`, `find` and `read` print is exactly
 what `click`, `move` and `drag` expect.

@@ -134,7 +134,7 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   `dsh-cu.action` (what the pill shows), `dsh-cu.cancelled` (the human pressed ESC), `dsh-cu.cursor` (present while `--hide-cursor` holds the
   pointer; the CLI heals leftover state), `dsh-cu.broker.ready|stop|req.*|res.*`. `StateFiles.cs`
   owns the paths and the PowerShell host reads them from there, so a name is written once. Both sides treat a heartbeat older than 5 s as "gone"; an
-  indicator that never sees a touch file stops itself after the same five minutes, so a broken
+  indicator that never sees a touch file stops itself after the same 60 seconds, so a broken
   watchdog cannot leave one running forever.
 - **MCP tools are CLI commands.** Every tool in `src/mcp.js` builds a CLI argv and runs the same
   `COMMANDS` handler, so validation, gating and output never drift between the two front ends. A
