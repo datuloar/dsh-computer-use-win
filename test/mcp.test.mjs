@@ -49,6 +49,18 @@ test('bad arguments fail as a tool error before anything touches the machine', a
     ['focus', {}, /exactly one of window or pid/],
     ['ui_tree', { window: 'a', pid: 1 }, /not both/],
     ['nonsense', {}, /unknown tool/],
+    ['type', {}, /text is required/],
+    ['type', { text: null }, /text must be a string/],
+    ['click', { x: null, y: 1 }, /x must be a number/],
+    ['click', { x: 1.2, y: 1 }, /x must be an integer/],
+    ['click', { x: 99999, y: 1 }, /between -32767 and 32767/],
+    ['click', { x: 1, y: 1, button: 'sideways' }, /button must be/],
+    ['scroll', { notches: 1, x: 1 }, /both x and y/],
+    ['focus', { pid: -1 }, /pid must be positive/],
+    ['ui_tree', { depth: 0 }, /depth must be at least 1/],
+    ['wait', { seconds: -1 }, /seconds must be at least 0/],
+    ['indicator', { action: 'start', hide_cursor: 'false' }, /hide_cursor must be a boolean/],
+    ['type', { text: 'hello', extra: true }, /unknown argument/],
   ];
   for (const [name, args, pattern] of cases) {
     const response = await request('tools/call', { name, arguments: args });

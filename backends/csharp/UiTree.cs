@@ -11,7 +11,6 @@ public static class UiTree
     private const int SearchDepth = 14;
     private const int WarmupMs = 260;
     private const int WarmupAttempts = 8;
-    private const int AwakeElements = 40;
 
     public static AutomationElement Foreground()
     {
@@ -36,11 +35,15 @@ public static class UiTree
         AutomationElementCollection windows = AutomationElement.RootElement.FindAll(
             TreeScope.Children,
             Condition.TrueCondition);
+        AutomationElement match = null;
         for (int index = 0; index < windows.Count; index++)
         {
             string name = Safe(windows[index], false);
-            if (name.Length > 0 && name.ToLowerInvariant().Contains(text.ToLowerInvariant())) return windows[index];
+            if (name.Length == 0 || !name.ToLowerInvariant().Contains(text.ToLowerInvariant())) continue;
+            if (match != null) throw new InvalidOperationException("multiple windows match the title; use a pid or a more specific title");
+            match = windows[index];
         }
+        if (match != null) return match;
         throw new InvalidOperationException("no window title contains " + text);
     }
 
@@ -228,11 +231,10 @@ public static class UiTree
     {
         try
         {
-            bool browser = WakeRenderers(window);
-            if (!browser && Document(window) == null) return;
+            if (!WakeRenderers(window)) return;
             for (int attempt = 0; attempt < WarmupAttempts; attempt++)
             {
-                if (browser ? Populated(window) : Count(window) >= AwakeElements) return;
+                if (Populated(window)) return;
                 System.Threading.Thread.Sleep(WarmupMs);
             }
         }
@@ -296,18 +298,6 @@ public static class UiTree
         catch
         {
             return false;
-        }
-    }
-
-    private static int Count(AutomationElement window)
-    {
-        try
-        {
-            return window.FindAll(TreeScope.Descendants, Condition.TrueCondition).Count;
-        }
-        catch
-        {
-            return 0;
         }
     }
 

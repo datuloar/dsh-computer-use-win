@@ -88,15 +88,35 @@ public sealed class PanelRenderer : IDisposable
         layout.ActionWidth = layout.Action.Length == 0
             ? 0
             : graphics.MeasureString(layout.Action, _action, int.MaxValue, _format).Width;
+        float ceiling = _canvas.Width - Theme.Pxf(16);
+        float fixedWidth = Theme.Pxf(PadSide * 2 + DotZone + GapText + GapDivider * 2 + 1 + ChipWidth + GapChip)
+            + layout.HintWidth;
+        layout.Title = Fit(graphics, layout.Title, _title, Math.Max(0, ceiling - fixedWidth));
+        layout.TitleWidth = graphics.MeasureString(layout.Title, _title, int.MaxValue, _format).Width;
+        layout.Action = Fit(graphics, layout.Action, _action,
+            Math.Max(0, ceiling - fixedWidth - layout.TitleWidth - Theme.Pxf(GapAction)));
+        layout.ActionWidth = layout.Action.Length == 0 ? 0 : graphics.MeasureString(layout.Action, _action, int.MaxValue, _format).Width;
         layout.Width = Theme.Pxf(PadSide + DotZone + GapText)
             + layout.TitleWidth
             + (layout.Action.Length == 0 ? 0 : Theme.Pxf(GapAction) + layout.ActionWidth)
             + Theme.Pxf(GapDivider * 2 + 1 + ChipWidth + GapChip)
             + layout.HintWidth
             + Theme.Pxf(PadSide);
-        float ceiling = _canvas.Width - Theme.Pxf(16);
         if (layout.Width > ceiling) layout.Width = ceiling;
         return layout;
+    }
+
+    private string Fit(Graphics graphics, string text, Font font, float width)
+    {
+        if (graphics.MeasureString(text, font, int.MaxValue, _format).Width <= width) return text;
+        if (graphics.MeasureString(Ellipsis.ToString(), font, int.MaxValue, _format).Width > width) return "";
+        int length = text.Length;
+        while (length > 0)
+        {
+            string shortened = text.Substring(0, --length).TrimEnd() + Ellipsis;
+            if (graphics.MeasureString(shortened, font, int.MaxValue, _format).Width <= width) return shortened;
+        }
+        return "";
     }
 
     private void DrawShadow(Graphics graphics, RectangleF pill)

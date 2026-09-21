@@ -39,8 +39,19 @@ function Set-Invocation {
     $script:HideCursor = $false
     $script:All = $false
     $script:Json = $false
+    $flags = switch ($script:Command) {
+        { $_ -in @('tree', 'find', 'tap') } { @('-Depth', '-TargetPid', '-TargetTitle', '-All', '-Json') }
+        { $_ -in @('overlay', 'overlay-start') } { @('-Announce', '-Quiet', '-HideCursor') }
+        'read' { @('-Language', '-Json') }
+        'wheel' { @('--horizontal') }
+        default { @() }
+    }
     for ($index = 1; $index -lt $Arguments.Count; $index++) {
         $argument = [string]$Arguments[$index]
+        if ($argument -notin $flags -or ($index -eq 1 -and $script:Command -in @('find', 'tap'))) {
+            [void]$script:operands.Add($argument)
+            continue
+        }
         $next = if ($index + 1 -lt $Arguments.Count) { [string]$Arguments[$index + 1] } else { $null }
         switch ($argument) {
             '-Announce' { $index++; if ($null -ne $next) { $script:Announce = [int]$next } }
@@ -141,6 +152,7 @@ function Set-Foreground($process) {
     $handle = $process.MainWindowHandle
     if ($handle -eq [IntPtr]::Zero) { throw "process $($process.Id) has no window" }
     for ($attempt = 1; $attempt -le 6; $attempt++) {
+        [DshCu.StateFiles]::RequireInput()
         if ($attempt -eq 1) { (New-Object -ComObject WScript.Shell).AppActivate($process.Id) | Out-Null }
         if ([DshCu.Native]::FocusVerified($handle)) {
             Write-Output ("FOCUSED " + $process.MainWindowTitle)
@@ -154,7 +166,7 @@ function Set-Foreground($process) {
 function Test-IndicatorProcess($process, [long]$startedTicks) {
     if (-not $process) { return $false }
     if ($process.ProcessName -ne 'powershell') { return $false }
-    if ($startedTicks -le 0) { return $true }
+    if ($startedTicks -le 0) { return $false }
     try {
         $drift = [Math]::Abs($process.StartTime.ToUniversalTime().Ticks - $startedTicks)
         return ($drift -lt (5 * [TimeSpan]::TicksPerSecond))
@@ -175,10 +187,11 @@ function Clear-Indicator {
             Start-Sleep -Milliseconds 100
             if (-not (Get-Process -Id $owner -ErrorAction SilentlyContinue)) { break }
         }
-        Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
+        $current = Get-Process -Id $owner -ErrorAction SilentlyContinue
+        if (Test-IndicatorProcess $current $ownerStarted) { Stop-Process -InputObject $current -Force -ErrorAction SilentlyContinue }
     }
-    [DshCu.SystemCursors]::Restore() | Out-Null
-    Remove-Item $aliveFile, $stopFile, $pidFile, $actionFile -Force -ErrorAction SilentlyContinue
+    if (Test-Path $cursorFile) { [DshCu.SystemCursors]::Restore() }
+    Remove-Item $aliveFile, $stopFile, $pidFile, $actionFile, ([DshCu.StateFiles]::Ready) -Force -ErrorAction SilentlyContinue
 }
 
 function Resolve-UiWindow {
@@ -432,6 +445,7 @@ function Invoke-Dispatch {
             $parts = $combo -split '\+'
             $modifiers = @('ctrl', 'shift', 'alt', 'win')
             $held = @()
+            try {
             for ($index = 0; $index -lt $parts.Count - 1; $index++) {
                 $name = $parts[$index].Trim()
                 if ($modifiers -notcontains $name.ToLowerInvariant()) { throw "unknown modifier: $name" }
@@ -441,10 +455,13 @@ function Invoke-Dispatch {
             $tapKey = $parts[-1].Trim()
             [DshCu.InputInjector]::Press($tapKey)
             [DshCu.InputInjector]::Release($tapKey)
-            for ($index = $held.Count - 1; $index -ge 0; $index--) { [DshCu.InputInjector]::Release($held[$index]) }
+            } finally {
+                for ($index = $held.Count - 1; $index -ge 0; $index--) { [DshCu.InputInjector]::Release($held[$index]) }
+            }
             Write-Output ('KEYS ' + $combo)
         }
         'clipboard' {
+            [DshCu.StateFiles]::RequireInput()
             $action = Arg 0
             if ($action -eq 'set') {
                 Set-Clipboard -Value (Arg 1)
@@ -496,7 +513,9 @@ function Invoke-Dispatch {
             Set-Foreground (Get-Process -Id $target -ErrorAction Stop)
         }
         'focus-title' {
-            $match = Get-VisibleWindow (Arg 0) | Select-Object -First 1
+            $matches = @(Get-VisibleWindow (Arg 0))
+            if ($matches.Count -gt 1) { throw 'multiple windows match the title; use a pid or a more specific title' }
+            $match = $matches | Select-Object -First 1
             if (-not $match) { throw "no window title contains $(Arg 0)" }
             Set-Foreground $match
         }
@@ -505,7 +524,10 @@ function Invoke-Dispatch {
             $seconds = if (Arg 1) { Test-Integer (Arg 1) 'seconds' } else { 15 }
             $deadline = (Get-Date).AddSeconds($seconds)
             while ((Get-Date) -lt $deadline) {
-                $match = Get-VisibleWindow $title | Select-Object -First 1
+                [DshCu.StateFiles]::RequireInput()
+                $matches = @(Get-VisibleWindow $title)
+                if ($matches.Count -gt 1) { throw 'multiple windows match the title; use a pid or a more specific title' }
+                $match = $matches | Select-Object -First 1
                 if ($match) {
                     Set-Foreground $match
                     return
@@ -515,6 +537,7 @@ function Invoke-Dispatch {
             throw "no window title contains $title within $seconds seconds"
         }
         'broker-start' {
+            [DshCu.StateFiles]::RequireInput()
             $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'broker-loop')
             Start-Process powershell -Verb RunAs -ArgumentList $arguments | Out-Null
             Write-Output 'BROKER_STARTED'
@@ -548,6 +571,7 @@ function Invoke-Dispatch {
             Write-Output 'BROKER_STOPPED'
         }
         'broker-stop' {
+            [DshCu.StateFiles]::RequireInput()
             Set-Content -Path $brokerStop -Value 'stop'
             for ($attempt = 0; $attempt -lt 40; $attempt++) {
                 Start-Sleep -Milliseconds 150
@@ -561,6 +585,7 @@ function Invoke-Dispatch {
             else { Write-Output 'BROKER_STOPPED' }
         }
         'run' {
+            [DshCu.StateFiles]::RequireInput()
             $previous = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
@@ -575,13 +600,15 @@ function Invoke-Dispatch {
             Write-Output ("EXIT " + $code)
         }
         'overlay-start' {
+            [DshCu.StateFiles]::Write($stopFile, 'stop')
             Clear-Indicator
-            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'overlay', '-Announce', "$Announce")
+            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), 'overlay', '-Announce', "$Announce")
             if ($Quiet) { $arguments += '-Quiet' }
             if ($HideCursor) { $arguments += '-HideCursor' }
-            Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+            $indicatorProcess = Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru
             for ($attempt = 0; $attempt -lt 60; $attempt++) {
                 Start-Sleep -Milliseconds 250
+                if ($indicatorProcess.HasExited) { throw 'the indicator stopped during the announcement or failed to start' }
                 if ((Get-StateAge $aliveFile) -lt $FreshSeconds) {
                     Write-Output 'RUNNING'
                     return
@@ -603,6 +630,7 @@ function Invoke-Dispatch {
             if ($mode -eq 'stop' -or $mode -eq 'restore-cursor') {
                 if ($mode -eq 'stop') { Set-Content -Path $stopFile -Value ([DateTime]::Now.ToString('O')) }
                 Clear-Indicator
+                if ($mode -eq 'restore-cursor') { [DshCu.SystemCursors]::Restore() }
                 if ($mode -eq 'stop') { Write-Output 'STOPPED' } else { Write-Output 'CURSOR_RESTORED' }
                 return
             }
@@ -610,7 +638,7 @@ function Invoke-Dispatch {
             Clear-Indicator
             $context = New-Object DshCu.Indicator($Quiet, $Announce, [bool]$HideCursor)
             [System.Windows.Forms.Application]::Run($context)
-            [DshCu.SystemCursors]::Restore() | Out-Null
+            if (Test-Path $cursorFile) { [DshCu.SystemCursors]::Restore() }
             Write-Output 'OVERLAY_CLOSED'
         }
         default { throw "unknown command: $Command" }

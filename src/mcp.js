@@ -7,7 +7,9 @@ import {
   humanStopSeconds,
   indicatorIsUp,
   indicatorProcessAlive,
+  indicatorReady,
   ps,
+  requireIndicator,
   serveCommand,
   sleep,
   useHost,
@@ -23,7 +25,7 @@ const MAX_WAIT_SECONDS = 30;
 
 const INSTRUCTIONS =
   'Windows desktop control. Read before acting: ui_tree/find list controls with a point to click, ' +
-  'read_text is OCR for windows without a tree, screenshot only when pixels matter. Act with tap ' +
+  'read_text is OCR; see gives local visual answers as text even to non-vision models. Act with tap ' +
   '(by name) or click (by point), then read again to verify. Input tools start the on-screen ' +
   'indicator by themselves; if the human pressed ESC, stop and ask them before continuing.';
 
@@ -73,6 +75,12 @@ function targetArgs(args) {
 }
 
 export const TOOLS = [
+  {
+    name: 'see',
+    description: 'See the screen through local vision and get a text answer. Ask a specific question; crop to the relevant window for speed.',
+    inputSchema: schema({ question: { type: 'string' }, ...region }, ['question']),
+    cli: (args) => ['see', args.question, ...regionArgs(args, '--region')],
+  },
   {
     name: 'ui_tree',
     description:
@@ -186,6 +194,7 @@ export const TOOLS = [
   {
     name: 'focus',
     description: 'Bring a window to the front and verify it is in front.',
+    gated: true,
     inputSchema: schema(target),
     cli: (args) => {
       if (args.window !== undefined && args.pid === undefined) return ['focus', '--title', String(args.window)];
@@ -240,6 +249,7 @@ async function runCli(argv) {
   const previous = sink;
   sink = [];
   try {
+    if (command.gated) requireIndicator();
     await command.run(args);
     return sink.join('\n').trim();
   } finally {
@@ -263,8 +273,18 @@ async function startIndicator(hideCursor) {
 }
 
 async function ensureIndicator() {
+  refuseAfterHumanStop();
   if (cursorMayBeHidden() && !indicatorProcessAlive()) await ps(['overlay', 'restore-cursor']);
-  if (indicatorIsUp() && indicatorProcessAlive()) return '';
+  if (indicatorIsUp() && indicatorProcessAlive()) {
+    const deadline = Date.now() + 35_000;
+    while (!indicatorReady()) {
+      refuseAfterHumanStop();
+      if (!indicatorIsUp() || !indicatorProcessAlive()) throw new ToolError('the indicator stopped during the announcement');
+      if (Date.now() >= deadline) throw new ToolError('the indicator did not finish the countdown');
+      await sleep(50);
+    }
+    return '';
+  }
   refuseAfterHumanStop();
   return `${await startIndicator(false)}\n`;
 }
@@ -272,7 +292,8 @@ async function ensureIndicator() {
 async function callTool(name, args) {
   const tool = TOOLS.find((entry) => entry.name === name);
   if (!tool) throw new ToolError(`unknown tool "${name}"`);
-  const input = args && typeof args === 'object' ? args : {};
+  const input = args === undefined ? {} : args;
+  validateArguments(tool.inputSchema, input);
   if (tool.local) return { content: [{ type: 'text', text: await tool.local(input) }] };
   const argv = tool.cli(input);
   const preface = tool.gated ? await ensureIndicator() : '';
@@ -283,6 +304,34 @@ async function callTool(name, args) {
     if (saved) content.push({ type: 'image', data: readFileSync(saved[1]).toString('base64'), mimeType: 'image/png' });
   }
   return { content };
+}
+
+function validateArguments(schema, args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) throw new ToolError('arguments must be an object');
+  for (const name of schema.required) {
+    if (args[name] === undefined) throw new ToolError(`${name} is required`);
+  }
+  for (const [name, value] of Object.entries(args)) {
+    const spec = schema.properties[name];
+    if (!spec) throw new ToolError(`unknown argument "${name}"`);
+    if (spec.type === 'integer' || spec.type === 'number') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new ToolError(`${name} must be a number`);
+      if (spec.type === 'integer' && !Number.isInteger(value)) throw new ToolError(`${name} must be an integer`);
+      if (spec.minimum !== undefined && value < spec.minimum) throw new ToolError(`${name} must be at least ${spec.minimum}`);
+      if (spec.maximum !== undefined && value > spec.maximum) throw new ToolError(`${name} must be at most ${spec.maximum}`);
+      if (['x', 'y', 'to_x', 'to_y', 'width', 'height'].includes(name) && Math.abs(value) > 32767)
+        throw new ToolError(`${name} must be between -32767 and 32767`);
+      if (name === 'pid' && value <= 0) throw new ToolError('pid must be positive');
+      if (name === 'notches' && Math.abs(value) > 17895697) throw new ToolError('notches is too large');
+    } else if (typeof value !== spec.type) {
+      throw new ToolError(`${name} must be a ${spec.type}`);
+    }
+    if (spec.type === 'string' && (name === 'text' ? value.length === 0 : !value.trim()))
+      throw new ToolError(`${name} must not be empty`);
+    if (spec.enum && !spec.enum.includes(value)) throw new ToolError(`${name} must be ${spec.enum.join(', ')}`);
+  }
+  if ('notches' in args && (args.x === undefined) !== (args.y === undefined))
+    throw new ToolError('scroll needs both x and y, or neither');
 }
 
 let queue = Promise.resolve();

@@ -5,6 +5,8 @@ public static class StateFiles
 {
     public static readonly string Heartbeat = InTemp("dsh-cu.alive");
 
+    public static readonly string Ready = InTemp("dsh-cu.ready");
+
     public static readonly string Stop = InTemp("dsh-cu.stop");
 
     public static readonly string Touch = InTemp("dsh-cu.touch");
@@ -62,6 +64,32 @@ public static class StateFiles
         long stamp = Stamp(path);
         if (stamp == 0) return double.MaxValue;
         return (DateTime.UtcNow - new DateTime(stamp, DateTimeKind.Utc)).TotalSeconds;
+    }
+
+    public static void RequireInput()
+    {
+        if (Environment.GetEnvironmentVariable("DSH_CU_ALLOW_NO_INDICATOR") == "1") return;
+        string owner = Read(Pid);
+        string[] fields = owner.Split(' ');
+        int pid;
+        long ticks;
+        bool alive = false;
+        if (fields.Length == 2 && int.TryParse(fields[0], out pid) && long.TryParse(fields[1], out ticks) && ticks > 0)
+        {
+            try
+            {
+                using (Process process = Process.GetProcessById(pid))
+                {
+                    alive = !process.HasExited && process.ProcessName == "powershell" &&
+                        Math.Abs(process.StartTime.ToUniversalTime().Ticks - ticks) < TimeSpan.TicksPerSecond * 5;
+                }
+            }
+            catch { }
+        }
+        if (!alive || AgeSeconds(Heartbeat) >= 5 || System.IO.File.Exists(Stop) || AgeSeconds(HumanStop) < 600)
+            throw new InvalidOperationException("the on-screen indicator is not running or the human stopped control");
+        if (Read(Ready) != owner)
+            throw new InvalidOperationException("the on-screen countdown is still running; wait for the announcement to finish");
     }
 }
 }

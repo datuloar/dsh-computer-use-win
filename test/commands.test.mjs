@@ -33,7 +33,7 @@ test('the help lists every command and no command that does not exist', () => {
 
 test('only the command that injects input is gated', () => {
   const gated = COMMANDS.filter((command) => command.gated).map((command) => command.name).sort();
-  assert.deepEqual(gated, ['click', 'clipboard', 'drag', 'key', 'keys', 'move', 'run', 'tap', 'type', 'wheel']);
+  assert.deepEqual(gated, ['click', 'clipboard', 'drag', 'focus', 'key', 'keys', 'move', 'run', 'tap', 'type', 'wait-window', 'wheel']);
 });
 
 test('doctor and self-test are the only commands that run off Windows', () => {

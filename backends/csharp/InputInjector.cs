@@ -50,6 +50,7 @@ public static class InputInjector
 
     public static void Drag(int fromX, int fromY, int toX, int toY)
     {
+        ValidatePoint(toX, toY);
         MovePointer(fromX, fromY, 90);
         MouseEvent(Native.MOUSEEVENTF_LEFTDOWN);
         System.Threading.Thread.Sleep(90);
@@ -58,6 +59,7 @@ public static class InputInjector
             int steps = DragSteps(fromX, fromY, toX, toY);
             for (int step = 1; step <= steps; step++)
             {
+                StateFiles.RequireInput();
                 double progress = Theme.Smooth((double)step / steps);
                 int x = (int)Math.Round(fromX + (toX - fromX) * progress);
                 int y = (int)Math.Round(fromY + (toY - fromY) * progress);
@@ -164,8 +166,18 @@ public static class InputInjector
 
     private static void MovePointer(int x, int y, int settleMs)
     {
+        StateFiles.RequireInput();
+        ValidatePoint(x, y);
         if (!Native.SetCursorPos(x, y)) throw new InvalidOperationException("SetCursorPos failed");
         if (settleMs > 0) System.Threading.Thread.Sleep(settleMs);
+    }
+
+    private static void ValidatePoint(int x, int y)
+    {
+        if (x < -32767 || x > 32767 || y < -32767 || y > 32767)
+            throw new ArgumentException("coordinates must be between -32767 and 32767");
+        if (!Screen.PrimaryScreen.Bounds.Contains(x, y))
+            throw new ArgumentException("the point is outside the primary screen; refresh the window or screenshot before acting");
     }
 
     private static void Tap(uint down, uint up)
@@ -218,6 +230,10 @@ public static class InputInjector
 
     private static void Send(INPUT input)
     {
+        bool releasing = input.type == Keyboard
+            ? (input.u.ki.dwFlags & Native.KEYEVENTF_KEYUP) != 0
+            : (input.u.mi.dwFlags & (Native.MOUSEEVENTF_LEFTUP | Native.MOUSEEVENTF_RIGHTUP | Native.MOUSEEVENTF_MIDDLEUP)) != 0;
+        if (!releasing) StateFiles.RequireInput();
         INPUT[] batch = new INPUT[] { input };
         uint sent = Native.SendInput(1, batch, Marshal.SizeOf(typeof(INPUT)));
         if (sent != 1)

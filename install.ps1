@@ -46,4 +46,4 @@ Say ''
 Say 'Verify the installation:'
 & node (Join-Path $here 'src\verify.js')
 Say '  node src\cli.js doctor'
-Say '  node src\cli.js self-test     (takes over the mouse and keyboard for ~40s)'
+Say '  node src\cli.js self-test     (takes over the mouse and keyboard in its own test window)'

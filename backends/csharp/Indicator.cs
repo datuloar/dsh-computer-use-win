@@ -31,27 +31,34 @@ public class Indicator : ApplicationContext
     private int _ticks;
     private long _actionStamp;
     private double _actionAt;
+    private bool _ready;
 
     public Indicator(bool quiet, int announceSeconds, bool hideCursor)
     {
         _quiet = quiet;
         _announceSeconds = announceSeconds;
-        _clock.Start();
         _pointerRenderer = new PointerRenderer(System.Windows.Forms.Cursor.Position, hideCursor);
-        SystemCursors.Restore();
+        if (System.IO.File.Exists(StateFiles.CursorHidden)) SystemCursors.Restore();
 
+        StateFiles.Delete(StateFiles.Ready);
         StateFiles.Write(StateFiles.Touch, DateTime.UtcNow.ToString("O"));
         StateFiles.Write(StateFiles.Pid, Process.GetCurrentProcess().Id + " " + StartTicks());
         StateFiles.Delete(StateFiles.Action);
         if (hideCursor) SystemCursors.Hide();
 
         Rectangle screen = Screen.PrimaryScreen.Bounds;
-        if (!_quiet) ShowChrome(screen);
+        ShowChrome(screen);
         _pointer = new LayeredWindow(new Rectangle(0, 0, PointerRenderer.Size, PointerRenderer.Size));
         _pointer.Show();
 
         _hookProc = OnKeyDown;
         _hook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, _hookProc, IntPtr.Zero, 0);
+        if (_hook == IntPtr.Zero)
+        {
+            Dispose();
+            throw new InvalidOperationException("could not install the ESC stop hook; refusing control");
+        }
+        _clock.Start();
 
         _timer = new Timer();
         _timer.Interval = Theme.TickMs;
@@ -80,6 +87,8 @@ public class Indicator : ApplicationContext
         if (code >= 0 && IsEscapeKeyDown(wParam, lParam))
         {
             _escaped = true;
+            StateFiles.Write(StateFiles.HumanStop, DateTime.UtcNow.ToString("O"));
+            StateFiles.Delete(StateFiles.Ready);
             _finished = true;
             return (IntPtr)1;
         }
@@ -104,12 +113,25 @@ public class Indicator : ApplicationContext
             WriteHeartbeat();
             ReadAction();
             PresentChrome();
+            if (!_ready && _clock.Elapsed.TotalSeconds >= _announceSeconds)
+            {
+                UpdatePanel();
+                StateFiles.Write(StateFiles.Ready, StateFiles.Read(StateFiles.Pid));
+                _ready = true;
+                if (_quiet)
+                {
+                    _panel.Dispose();
+                    _panel = null;
+                    _edge.Dispose();
+                    _edge = null;
+                }
+            }
             _pointerRenderer.Track(System.Windows.Forms.Cursor.Position, LeftButtonDown(), RightButtonDown());
             _pointerRenderer.Draw(_pointer);
         }
         catch
         {
-            SystemCursors.Restore();
+            if (System.IO.File.Exists(StateFiles.CursorHidden)) SystemCursors.Restore();
             _finished = true;
         }
     }
@@ -165,7 +187,7 @@ public class Indicator : ApplicationContext
 
     private void PresentChrome()
     {
-        if (_quiet || _edge == null) return;
+        if (_edge == null) return;
         double elapsed = _clock.Elapsed.TotalSeconds;
         bool announcing = elapsed < _announceSeconds;
         _edge.Present(announcing ? AnnounceAlpha : PulseAlpha(elapsed));
@@ -228,8 +250,9 @@ public class Indicator : ApplicationContext
             StateFiles.Delete(StateFiles.Pid);
             StateFiles.Delete(StateFiles.Touch);
             StateFiles.Delete(StateFiles.Heartbeat);
+            StateFiles.Delete(StateFiles.Ready);
             StateFiles.Delete(StateFiles.Action);
-            SystemCursors.Restore();
+            if (System.IO.File.Exists(StateFiles.CursorHidden)) SystemCursors.Restore();
             if (_timer != null) { _timer.Stop(); _timer.Dispose(); }
             if (_hook != IntPtr.Zero) Native.UnhookWindowsHookEx(_hook);
             if (_pointerRenderer != null) _pointerRenderer.Dispose();

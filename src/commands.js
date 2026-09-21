@@ -9,6 +9,7 @@ import {
   forgetHumanStop,
   indicatorIsUp,
   indicatorProcessAlive,
+  indicatorReady,
   input,
   isWindows,
   ps,
@@ -19,6 +20,7 @@ import {
   temp,
 } from './backend.js';
 import { ToolError } from './tool-error.js';
+import { describeImage, ensureVision, validateVisionQuestion } from './vision.js';
 
 const DEFAULT_ANNOUNCE_SECONDS = 8;
 const MAX_ANNOUNCE_SECONDS = 30;
@@ -115,6 +117,20 @@ async function runShot(args) {
     throw new ToolError('capture returned an empty image — is the session locked or the display asleep?');
   }
   console.log(`SAVED ${file} ${size} bytes`);
+}
+
+async function runSee(args) {
+  const question = validateVisionQuestion(args[0]);
+  const { file: extra, region } = parseShotArgs(args.slice(1));
+  if (extra) throw new ToolError('see takes a question and optional --region x y width height');
+  await ensureVision();
+  const file = screenshotPath();
+  try {
+    const output = await ps(['shot', file, ...(region ?? []).map(String)]);
+    const captured = /CAPTURED (\d+)x(\d+) at (-?\d+),(-?\d+)/.exec(output);
+    if (!captured) throw new ToolError('the screenshot returned no capture coordinates');
+    console.log(await describeImage(file, question, { x: Number(captured[3]), y: Number(captured[4]) }));
+  } finally { if (existsSync(file)) unlinkSync(file); }
 }
 
 export function parseReadArgs(args) {
@@ -248,7 +264,8 @@ async function runWheel(args) {
 }
 
 async function runType(args) {
-  const text = required(args.join(' '), 'type text');
+  const text = args.join(' ');
+  if (!text.length) throw new ToolError('type text is required');
   for (let index = 0; index < text.length; index += TYPE_CHUNK_CHARS) {
     requireIndicator();
     console.log(await input(['type', text.slice(index, index + TYPE_CHUNK_CHARS)]));
@@ -354,7 +371,15 @@ async function runOverlay(args) {
     throw new ToolError('the indicator did not come up — refusing to start input without it');
   }
 
-  await sleep(options.announce * 1000);
+  const deadline = Date.now() + (options.announce + 5) * 1000;
+  while (!indicatorReady()) {
+    if (!indicatorIsUp() || !indicatorProcessAlive()) {
+      throw new ToolError('the indicator stopped during the announcement; input remains blocked');
+    }
+    if (Date.now() >= deadline) throw new ToolError('the indicator did not finish the countdown; input remains blocked');
+    await sleep(50);
+  }
+  requireIndicator();
   console.log(`OVERLAY on (frame up, announced for ${options.announce}s)`);
 }
 
@@ -431,6 +456,12 @@ async function runSelfTest() {
 }
 
 export const COMMANDS = [
+  {
+    name: 'see',
+    args: '<question> [--region <x> <y> <w> <h>]',
+    summary: 'ask local vision about the screen; returns text for models without vision',
+    run: runSee,
+  },
   {
     name: 'shot',
     args: '[file.png] [--region <x> <y> <w> <h>]',
@@ -534,12 +565,14 @@ export const COMMANDS = [
     name: 'focus',
     args: '<pid> | --title <text>',
     summary: 'bring a window to the front, verified',
+    gated: true,
     run: runFocus,
   },
   {
     name: 'wait-window',
     args: '<text> [seconds]',
     summary: 'wait for a window to appear, then focus it',
+    gated: true,
     run: runWaitWindow,
   },
   {

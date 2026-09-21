@@ -5,9 +5,10 @@ const END = 'DSH-CU-END';
 const START_TIMEOUT_MS = 30_000;
 
 export class BackendHost {
-  constructor({ command, args }) {
+  constructor({ command, args, spawnProcess = spawn }) {
     this.command = command;
     this.args = args;
+    this.spawnProcess = spawnProcess;
     this.child = null;
     this.buffer = '';
     this.pending = null;
@@ -55,7 +56,7 @@ export class BackendHost {
   start() {
     if (this.ready) return this.ready;
     this.ready = new Promise((resolve, reject) => {
-      const child = spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      const child = this.spawnProcess(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       this.child = child;
       this.buffer = '';
       const timer = setTimeout(() => {
@@ -63,19 +64,31 @@ export class BackendHost {
         reject(new ToolError('the backend did not start within 30s'));
       }, START_TIMEOUT_MS);
       child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk) => this.receive(chunk, () => {
-        clearTimeout(timer);
-        resolve();
-      }));
+      child.stdout.on('data', (chunk) => {
+        if (this.child !== child) return;
+        this.receive(chunk, () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
       child.stderr.on('data', () => undefined);
       child.on('error', (error) => {
         clearTimeout(timer);
+        if (this.child !== child) return;
         this.reset(new ToolError(`the backend could not start: ${error.message}`));
         reject(new ToolError(`the backend could not start: ${error.message}`));
       });
       child.on('exit', (code) => {
         clearTimeout(timer);
-        this.reset(new ToolError(`the backend exited (${code ?? 'killed'}) in the middle of a command`));
+        if (this.child !== child) return;
+        const error = new ToolError(`the backend exited (${code ?? 'killed'}) before completing startup or a command`);
+        this.reset(error);
+        reject(error);
+      });
+      child.stdin.on('error', (error) => {
+        if (this.child !== child) return;
+        this.pending?.fail(new ToolError(`the backend input pipe failed: ${error.message}`));
+        this.kill();
       });
     });
     return this.ready;

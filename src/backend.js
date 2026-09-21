@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,23 @@ import { ToolError } from './tool-error.js';
 const here = dirname(fileURLToPath(import.meta.url));
 
 export const root = resolve(here, '..');
+
+export const visionHome = () => join(process.env.LOCALAPPDATA || tmpdir(), 'dsh-cu', 'vision');
+
+export async function startVisionServer() {
+  const folder = visionHome();
+  const executable = join(folder, 'runtime', 'llama-server.exe');
+  if (![executable, join(folder, 'model.gguf'), join(folder, 'mmproj.gguf')].every(existsSync))
+    throw new ToolError('Local vision is not installed. Run powershell -ExecutionPolicy Bypass -File install-vision.ps1');
+  const log = openSync(join(folder, 'server.log'), 'a');
+  try {
+    const child = spawn(executable, ['-m', join(folder, 'model.gguf'), '--mmproj', join(folder, 'mmproj.gguf'),
+      '--host', '127.0.0.1', '--port', '19471', '-ngl', '99', '-c', '8192', '-np', '1',
+      '--alias', 'dsh-vision', '--jinja', '--sleep-idle-seconds', '300'], { detached: true, windowsHide: true, stdio: ['ignore', log, log] });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref();
+  } finally { closeSync(log); }
+}
 
 export const backendScript = join(root, 'backends', 'windows.ps1');
 
@@ -187,11 +204,23 @@ export function cursorMayBeHidden() {
 
 export function requireIndicator() {
   if (process.env.DSH_CU_ALLOW_NO_INDICATOR === '1') return;
-  if (indicatorIsUp() && indicatorProcessAlive()) return;
+  if (indicatorIsUp() && indicatorProcessAlive() && humanStopSeconds() >= 600) {
+    if (indicatorReady()) return;
+    throw new ToolError('the on-screen countdown is still running; wait for the announcement to finish');
+  }
   throw new ToolError(
     'the on-screen indicator is not running, so the human cannot see or stop this.\n' +
       'Start it with "dsh-cu overlay" first, or set DSH_CU_ALLOW_NO_INDICATOR=1 to override.',
   );
+}
+
+export function indicatorReady() {
+  try {
+    const owner = readFileSync(temp('dsh-cu.pid'), 'utf8').trim();
+    return owner.length > 0 && readFileSync(temp('dsh-cu.ready'), 'utf8').trim() === owner;
+  } catch {
+    return false;
+  }
 }
 
 function answerFromBroker(args, timeoutMs) {

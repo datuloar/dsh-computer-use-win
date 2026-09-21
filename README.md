@@ -21,12 +21,17 @@ repository is `dsh-computer-use-win` — three names, one thing.
 **Nothing to install.** No packages, no driver, no SDK: the backend compiles its own C#
 with the .NET Framework that ships with Windows.
 
+Requires Node.js 18+ and Windows PowerShell 5.1 on a Windows desktop. The C# compiler is
+provided by the built-in .NET Framework; users do not need Visual Studio or the .NET SDK.
+PowerShell 7 (`pwsh`) is not a supported replacement for this Framework/WinRT backend.
+
 ## Why this one
 
 - **Cheap enough for a text-only model.** `tree` reads the control tree through UI Automation
   (native apps, and web pages once the browser's accessibility is woken up), `read` runs the OCR
   that ships with Windows, and both print a clickable point per line. A window costs a few hundred
-  tokens instead of a 4 MB screenshot, and no image ever leaves the machine.
+  tokens instead of a full screenshot. OCR and UI Automation run locally; MCP `screenshot`
+  returns image data to the connected client/model.
 - **The human can see it and kill it.** A rounded status panel that names the command being run
   ("click 640,380"), a glow along the screen edge and a ring that follows the real pointer; ESC
   stops everything. Injected ESC is ignored, so an agent cannot switch off its own indicator.
@@ -39,8 +44,8 @@ with the .NET Framework that ships with Windows.
 - **It runs on a stock Windows box.** Other computer-use plugins drive an external native driver
   (cua-driver and friends) that has to be installed first; this one needs only the PowerShell and
   .NET that Windows already has.
-- **It is verified against the real machine.** `dsh-cu self-test` exercises every command and
-  reports pass/fail; environment-dependent checks (Notepad window, focus) warn instead of lying.
+- **It is verified against the real machine.** `dsh-cu self-test` drives an isolated test window
+  through MCP and checks countdown gating, text, clicks, screenshots and cursor recovery.
 - **Works from inside the Harness sandbox.** The Harness file sandbox blocks piped stdio for
   nested processes; the CLI falls back to file-descriptor capture, so `dsh-cu` still works where
   a naive `spawn(..., {stdio: 'pipe'})` gets `EPERM`.
@@ -86,6 +91,8 @@ dsh-cu overlay --stop                # stop and clean up
 
 ## Commands
 
+    dsh-cu see <question> [--region <x> <y> <w> <h>]   ask local vision about the screen, returns text
+
     dsh-cu shot [file.png] [--region <x> <y> <w> <h>]   capture the screen, or a crop of it
     dsh-cu read [--region <x> <y> <w> <h>] [--lang <tag>] [--json]   the screen as text, with a point per line
     dsh-cu tree [--pid N | --title <text>] [--depth N] [--all] [--json]   the control tree of a window
@@ -129,7 +136,8 @@ what sliders, selections and drag-and-drop targets expect; `click` also takes `m
 `dsh-cu mcp` serves every command as native tools over MCP stdio: `ui_tree`, `find`, `tap`,
 `read_text`, `screenshot` (returns the image), `click`, `move`, `drag`, `scroll`, `type`, `press`,
 `windows`, `focus`, `wait` and `indicator`. It keeps one backend process warm, so a call takes
-10–200 ms instead of the ~550 ms a fresh PowerShell costs, and input tools start the on-screen
+without recompiling C# for each call; timings depend on the application's UI Automation provider.
+Input tools, including `focus`, start the on-screen
 indicator by themselves the first time.
 
 DeepSeek Harness — add a row to your profile patch (`<DSH_HOME>\profiles\web\cordis.patch.yml`);
@@ -154,6 +162,21 @@ minutes with a message telling the agent to stop and ask — an agent cannot qui
 indicator it was just stopped with.
 
 ## Driving a GUI without vision
+
+Optional local sight: run `powershell -ExecutionPolicy Bypass -File install-vision.ps1` once.
+It downloads about 3.4 GB of pinned, SHA256-verified Qwen3-VL 4B weights and a Vulkan
+llama.cpp runtime from their official repositories. No Python, SDK or API key is needed.
+The local server starts on demand at 127.0.0.1:19471. After five minutes without tasks,
+llama.cpp unloads the model and its caches from memory. The lightweight server stays running
+and automatically reloads the model on the next request. Active tasks prevent idle sleep.
+Restart an existing MCP connection once to discover the new `see` tool.
+
+Call `see` with a specific question and a crop of the relevant window. It returns text
+instead of image blocks, so a text-only DeepSeek can use it. Images go only to the local
+server; the resulting text goes to the main model. Coordinates are estimates;
+the tool converts normalized model boxes into `screen_box` and `screen_point` in screen pixels.
+Prefer UIA for exact controls and reobserve
+after moving or scrolling. The tool observes only and never clicks by itself.
 
 ```powershell
 dsh-cu overlay                       # the human is warned, ESC cancels
@@ -226,8 +249,12 @@ All images on this page were taken over a neutral demo window, not a real deskto
   dies, so a killed indicator cannot leave the human blind for the seconds the heartbeat stays
   fresh. Override only deliberately: `DSH_CU_ALLOW_NO_INDICATOR=1`.
 - **The indicator comes up before input is allowed**, and the CLI waits out the full announcement
-  (default 8 s) after the frame is confirmed on screen.
+  (default 8 s) after the frame is confirmed on screen. The indicator publishes readiness only
+  after that countdown. CLI, MCP and direct backend input all check it, including concurrent
+  calls. `focus` and `wait-window` are gated too. `--quiet` hides chrome only after the countdown.
 - **ESC stops it** — a physical press only; injected ESC is ignored.
+  Text input and drags check the gate during execution; key releases still run during cleanup.
+  An already launched `run` process is not cancelled by ESC.
 - **The panel says what is happening.** Every command writes a one-line label the indicator shows
   next to the status text, so the human can follow along; `type` is reported as a character count
   rather than the text, so a typed password never appears on screen.
@@ -254,7 +281,6 @@ All images on this page were taken over a neutral demo window, not a real deskto
 | `DSH_CU_ALLOW_NO_INDICATOR=1` | let input through while the indicator is down — deliberate override, nothing else bypasses the gate |
 | `DSH_CU_UI_SCALE=1.5` | scale the indicator on top of the display DPI, for a 4K panel or weak eyes (0.75–4) |
 | `DSH_CU_POWERSHELL=powershell` | the default; set it to another PowerShell only if yours lives elsewhere |
-| `DSH_CU_POWERSHELL=pwsh` | run the backend with another PowerShell executable |
 
 ## Running from inside a sandboxed agent session
 
@@ -270,7 +296,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File backends\windows.ps1 shot C:
 
 ## Limits, stated plainly
 
-- **Windows only.** `doctor` and `self-test` still run elsewhere; every other command refuses.
+- **Windows desktop only.** `doctor` can report an unsupported host; the interactive self-test
+  requires Windows too.
 - **Elevated windows** cannot be driven from a non-elevated process (UIPI) — use `broker start`.
 - **The UAC consent dialog and the lock screen are unreachable**: they run on the secure desktop,
   which is neither capturable nor clickable without a signed UIAccess binary.
@@ -310,15 +337,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File backends\windows.ps1 shot C:
 ```powershell
 node src\verify.js           # static: skill frontmatter, documented commands, plugin manifest
 node test\run.mjs            # node:test suite for the pure parts (frontmatter, command table, contract)
-node src\cli.js self-test    # real machine: every command, ~40 s, takes over mouse and keyboard
+node src\cli.js self-test    # real machine: isolated test window, takes over mouse and keyboard
 node src\cli.js doctor
 ```
 
 `verify` and the test suite touch nothing, so a runner can execute them (see
 `.github/workflows/ci.yml`, which calls exactly these two). `self-test` is the invasive one — run it
-on a desktop you are willing to hand over for a minute (it opens Notepad, types, clicks and closes
-Notepad again). From a sandboxed agent session Notepad cannot start, so those three checks report a
-warning instead of failing.
+on an unlocked desktop you are willing to hand over. It creates its own Windows Forms window,
+leaves existing editors and the clipboard alone, and closes only that test window. The test
+fails if the desktop cannot accept input. It refuses to replace an active session or restart
+after a recent human ESC. Screenshots and text evidence are retained in the reported temp folder.
+Physical ESC and an actual model's ability to finish a task remain separate interactive checks.
 
 ```
 src/cli.js              entry point: argv -> one command call, one error path

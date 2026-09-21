@@ -1,448 +1,207 @@
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import assert from 'node:assert/strict';
 import { checkContract } from './contract.js';
+import { indicatorIsUp, humanStopSeconds } from './backend.js';
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+async function until(check) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await sleep(50);
+  }
+  throw new Error('timed out waiting for the test fixture');
+}
 
 export async function runSelfTest({ root, cli, exec }) {
-  const backend = join(root, 'backends', 'windows.ps1');
-  const temp = (name) => join(tmpdir(), 'dsh-computer-use', name);
-  const aliveFile = join(tmpdir(), 'dsh-cu.alive');
-  const pidFile = join(tmpdir(), 'dsh-cu.pid');
-  const cursorMarker = join(tmpdir(), 'dsh-cu.cursor');
-  const actionFile = join(tmpdir(), 'dsh-cu.action');
-
-  const cliCall = (args) => exec(process.execPath, [cli, ...args]);
-  const backendCall = (args) =>
-    exec('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', backend, ...args]);
-
-  const warnings = [];
-  const results = [];
-  const check = async (name, fn) => {
-    try {
-      const detail = await fn();
-      results.push({ name, ok: true });
-      console.log(`PASS  ${name}${detail ? ` — ${detail}` : ''}`);
-    } catch (error) {
-      results.push({ name, ok: false, detail: error.message });
-      console.log(`FAIL  ${name} — ${error.message}`);
-    }
-  };
-  const checkSoft = async (name, fn) => {
-    try {
-      const detail = await fn();
-      console.log(`PASS  ${name} (environment dependent)${detail ? ` — ${detail}` : ''}`);
-    } catch (error) {
-      warnings.push(name);
-      console.log(`WARN  ${name} — ${error.message}`);
-    }
-  };
-
-  const assert = (condition, message) => {
-    if (!condition) throw new Error(message);
-  };
-
-  const foregroundTitle = () => {
-    const line = cliCall(['pos'])
-      .split('\n')
-      .find((row) => row.startsWith('FOREGROUND')) ?? '';
-    return line.replace(/^FOREGROUND\s+\d+\s*/, '').trim();
-  };
-
-  console.log(`self-test: ${root}\n`);
-
-  await check('documentation and command surface agree (static)', () => {
-    const problems = checkContract(root);
-    assert(problems.length === 0, problems.join('; '));
-    return 'skill frontmatter, command list and plugin manifest';
-  });
-
-  await check('doctor reports a Windows host', () => {
-    const output = cliCall(['doctor']);
-    assert(output.includes('win32'), 'platform is not win32');
-    assert(output.includes('installs:'), 'doctor should confirm that nothing must be installed');
-    return output.split('\n').find((line) => line.startsWith('display:'))?.trim() ?? 'win32';
-  });
-
-  cliCall(['overlay', '--stop']);
-
-  await check('input is refused while the indicator is down', () => {
-    let message = '';
-    try {
-      cliCall(['move', '100', '100']);
-    } catch (error) {
-      message = String(error.stderr ?? error.stdout ?? error.message);
-    }
-    assert(/indicator is not running/.test(message), `expected a refusal, got: ${message.trim() || 'no output'}`);
-    return 'refused';
-  });
-
-  await check('overlay comes up before input is allowed', () => {
-    const announce = 2;
-    const started = Date.now();
-    const output = cliCall(['overlay', '--announce', String(announce)]);
-    const elapsed = (Date.now() - started) / 1000;
-    assert(output.includes('frame up'), `unexpected overlay output: ${output}`);
-    assert(elapsed >= announce, `returned after ${elapsed.toFixed(1)}s, before the ${announce}s announcement`);
-    assert(backendCall(['overlay-state']).includes('RUNNING'), 'the indicator is not running after start');
-    assert(cliCall(['overlay-state']).includes('RUNNING'), 'the CLI cannot see the running indicator');
-    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the default overlay must not touch the pointer');
-    return `frame up, announced ${elapsed.toFixed(1)}s`;
-  });
-
-  const shotFile = temp(`selftest-${Date.now()}.png`);
-  await check('shot writes a real PNG', () => {
-    assert(cliCall(['shot', shotFile]).includes('SAVED'), 'no SAVED line');
-    assert(existsSync(shotFile), 'no file produced');
-    const size = statSync(shotFile).size;
-    assert(size > 50_000, `suspiciously small capture: ${size} bytes`);
-    unlinkSync(shotFile);
-    return `${size} bytes`;
-  });
-
-  await check('shot --region crops to the rectangle it was given', () => {
-    const cropFile = temp(`selftest-crop-${Date.now()}.png`);
-    assert(cliCall(['shot', cropFile, '--region', '80', '60', '240', '180']).includes('SAVED'), 'no SAVED line');
-    const png = readFileSync(cropFile);
-    const width = png.readUInt32BE(16);
-    const height = png.readUInt32BE(20);
-    unlinkSync(cropFile);
-    assert(width === 240 && height === 180, `the crop is ${width}x${height}, not 240x180`);
-    return '240x180 PNG';
-  });
-
-  await check('pos reads pointer and foreground window', () => {
-    const output = cliCall(['pos']);
-    assert(/CURSOR -?\d+,-?\d+/.test(output), `unexpected output: ${output}`);
-    assert(output.includes('FOREGROUND'), 'no foreground window');
-    return output.split('\n')[0];
-  });
-
-  await check('move + pos agree (DPI check, retried)', () => {
-    let last = '';
-    for (let attempt = 0; attempt < 4; attempt++) {
-      cliCall(['move', '320', '240']);
-      const read = cliCall(['pos']).match(/CURSOR (-?\d+),(-?\d+)/);
-      assert(read, 'pos reported no position');
-      last = `${read[1]},${read[2]}`;
-      if (Math.abs(Number(read[1]) - 320) + Math.abs(Number(read[2]) - 240) <= 4) return last;
-    }
-    throw new Error(`pointer landed at ${last} instead of 320,240`);
-  });
-
-  await check('the indicator is told which command is running', () => {
-    cliCall(['move', '320', '240']);
-    const label = readFileSync(actionFile, 'utf8').trim();
-    assert(label === 'move 320,240', `the panel was told "${label}" instead of "move 320,240"`);
-    cliCall(['wheel', '-120', '400', '300']);
-    const scrolled = readFileSync(actionFile, 'utf8').trim();
-    assert(scrolled === 'scroll -120 at 400,300', `the panel was told "${scrolled}" for a scroll`);
-    return `"${label}", then "${scrolled}"`;
-  });
-
-  await check('wheel scrolls, at a point, and sideways', () => {
-    assert(cliCall(['wheel', '120']).includes('WHEEL 120'), 'unexpected wheel output');
-    assert(cliCall(['wheel', '-120', '400', '300']).includes('WHEEL -120 at 400,300'), 'wheel at a point failed');
-    assert(
-      cliCall(['wheel', '-120', '400', '300', '--horizontal']).includes('HWHEEL -120 at 400,300'),
-      'horizontal wheel failed',
-    );
-    return 'plain, at a point, horizontal';
-  });
-
-  await check('key combinations echo exactly one line', () => {
-    const output = cliCall(['keys', 'ctrl+l']);
-    assert(output === 'KEYS ctrl+l', `expected a single line, got: ${JSON.stringify(output)}`);
-    return 'KEYS ctrl+l';
-  });
-
-  await check('clipboard round-trips text with quotes and dashes', () => {
-    const marker = `dsh-cu-${Date.now()} "quoted" -dashed`;
-    cliCall(['clipboard', 'set', marker]);
-    const read = cliCall(['clipboard', 'get']);
-    assert(read.includes(marker), `clipboard returned ${read} instead of ${marker}`);
-    return `${marker.length} chars, quotes and the leading dash intact`;
-  });
-
-  await check('windows --json lists rectangles as an array', () => {
-    const raw = cliCall(['windows', '--json']);
-    const entries = JSON.parse(raw.slice(raw.indexOf('[')));
-    assert(Array.isArray(entries) && entries.length > 0, 'no windows returned');
-    const first = entries.find((entry) => entry.title && entry.width > 0);
-    assert(first, 'no window with a rectangle');
-    return `${entries.length} windows, first ${first.width}x${first.height}`;
-  });
-
-  await check('overlay stop leaves nothing behind', async () => {
-    assert(cliCall(['overlay', '--stop']).includes('STOPPED'), 'stop did not confirm');
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && !backendCall(['overlay-state']).includes('STOPPED')) await sleep(200);
-    assert(backendCall(['overlay-state']).includes('STOPPED'), 'indicator still alive');
-    assert(!existsSync(aliveFile) && !existsSync(pidFile) && !existsSync(cursorMarker), 'state files were left behind');
-    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer is still replaced after a stop');
-    return 'process, cursor and files clean';
-  });
-
-  await check('cursor rescue works', () => {
-    assert(cliCall(['overlay', '--restore-cursor']).includes('CURSOR_RESTORED'), 'cursor was not restored');
-    return 'CURSOR_RESTORED';
-  });
-
-  await check('overlay --hide-cursor replaces the pointer and gives it back', () => {
-    cliCall(['overlay', '--stop']);
-    cliCall(['overlay', '--announce', '0', '--hide-cursor']);
-    assert(backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer was not replaced');
-    assert(cliCall(['overlay', '--stop']).includes('STOPPED'), 'stop did not confirm');
-    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer was not given back');
-    return 'replaced while up, given back on stop';
-  });
-
-  await check('a killed indicator refuses input at once and leaves the pointer alone', () => {
-    cliCall(['overlay', '--announce', '0']);
-    const owner = Number.parseInt(readFileSync(pidFile, 'utf8').trim().split(/\s+/)[0], 10);
-    exec('powershell', ['-NoProfile', '-Command', `Stop-Process -Id ${owner} -Force`]);
-
-    let refusal = '';
-    try {
-      cliCall(['move', '10', '10']);
-    } catch (error) {
-      refusal = String(error.stderr ?? error.stdout ?? error.message);
-    }
-    assert(
-      /indicator is not running/.test(refusal),
-      `expected a refusal right after the kill, got: ${refusal.trim() || 'no output'}`,
-    );
-    assert(!backendCall(['cursor-state']).includes('CURSOR_REPLACED'), 'the pointer was left replaced by the kill');
-    return 'refused immediately, pointer untouched';
-  });
-
-  await check('a stale pid file never kills an unrelated process', async () => {
-    const start = "Start-Process -FilePath powershell -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 25') -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id";
-    const decoyPid = Number.parseInt(exec('powershell', ['-NoProfile', '-Command', start]), 10);
-    await sleep(1200);
-    writeFileSync(pidFile, `${decoyPid} 1`);
-    cliCall(['overlay', '--stop']);
-
-    let survived = true;
-    try {
-      process.kill(decoyPid, 0);
-    } catch {
-      survived = false;
-    }
-    try {
-      exec('powershell', ['-NoProfile', '-Command', `Stop-Process -Id ${decoyPid} -Force`]);
-    } catch {}
-    assert(survived, `pid ${decoyPid} was stopped although it is not the indicator`);
-    return 'the recorded pid was rejected';
-  });
-
-  cliCall(['overlay', '--announce', '0']);
-
-  try {
-    execFileSync('taskkill', ['/IM', 'notepad.exe', '/F'], { stdio: 'ignore', windowsHide: true });
-  } catch {
-
-  }
-  await sleep(600);
-
-  const scratch = temp(`scratch-${Date.now()}.txt`);
-  writeFileSync(scratch, 'dsh-cu self-test\n');
-  const notepad = spawn('notepad.exe', [scratch], { detached: true, stdio: 'ignore' });
-  notepad.unref();
-  await sleep(2500);
-
-  try {
-    const scratchName = scratch.split('\\').pop();
-
-    const notepadWindows = () => {
-      const raw = cliCall(['windows', '--json']);
-      const start = raw.indexOf('[');
-      if (start < 0) return [];
-      return JSON.parse(raw.slice(start)).filter((entry) => /notepad|блокнот/i.test(entry.title));
-    };
-
-    if (notepadWindows().length === 0) {
-
-      warnings.push('interactive window checks');
-      console.log('WARN  Notepad did not open a window (sandboxed or non-interactive session)');
-      console.log('WARN  skipped: wait-window focus, typed text, click modes');
-    } else {
-      await checkSoft('wait-window focuses a window by title', () => {
-
-        const focused = cliCall(['wait-window', scratchName, '10']);
-        assert(focused.startsWith('FOCUSED'), `wait-window said: ${focused}`);
-        const title = foregroundTitle();
-        assert(/notepad|блокнот/i.test(title), `notepad is not in front: "${title}"`);
-        return focused.slice(0, 60);
-      });
-
-      await checkSoft('typed text reaches the focused application', async () => {
-        assert(/notepad|блокнот/i.test(foregroundTitle()), `notepad is not in front: "${foregroundTitle()}"`);
-        assert(!foregroundTitle().includes('*'), 'the scratch document is already modified');
-        let modified = false;
-        for (let attempt = 0; attempt < 3 && !modified; attempt++) {
-          cliCall(['type', 'dsh cu selftest "quoted" -dashed']);
-          await sleep(1200);
-          modified = foregroundTitle().includes('*');
-        }
-        assert(modified, `the document stayed unmodified after three attempts ("${foregroundTitle()}")`);
-        const label = readFileSync(actionFile, 'utf8').trim();
-        assert(/^type \d+ chars$/.test(label), `typed text must be counted, not shown: "${label}"`);
-        return `document marked as edited: ${foregroundTitle().slice(0, 40)}`;
-      });
-
-      await check('tree lists the window controls with clickable points', () => {
-        const output = cliCall(['tree', '--title', scratchName, '--depth', '8']);
-        assert(output.startsWith('TREE '), `unexpected tree output: ${output.slice(0, 120)}`);
-        const points = output.split('\n').filter((line) => / @-?\d+,-?\d+/.test(line));
-        assert(points.length >= 3, `only ${points.length} controls with a point`);
-        return `${points.length} controls`;
-      });
-
-      await check('find narrows the tree to matching names', () => {
-        const output = cliCall(['find', scratchName, '--title', scratchName]);
-        assert(/^FOUND [1-9]/.test(output), `nothing found for the file name: ${output.slice(0, 120)}`);
-        return output.split('\n')[0];
-      });
-
-      await checkSoft('tap clicks the one control with that exact name', () => {
-        const output = cliCall(['tap', scratchName, '--title', scratchName]);
-        assert(output.includes('TAPPED'), `unexpected tap output: ${output}`);
-        return output.split('\n').pop();
-      });
-
-      await checkSoft('read turns the window into text lines with points', () => {
-        const [target] = notepadWindows();
-        const region = [target.left, target.top, Math.min(target.width, 900), Math.min(target.height, 500)];
-        const output = cliCall(['read', '--region', ...region.map(String)]);
-        assert(/^READ [1-9]/.test(output), `OCR returned nothing: ${output.slice(0, 120)}`);
-        return output.split('\n')[0];
-      });
-
-      await check('drag glides between two points inside the window', () => {
-        const [target] = notepadWindows();
-        assert(target && target.width > 200, 'no usable Notepad rectangle to drag in');
-        const y = Math.round(target.top + Math.min(90, target.height / 2));
-        const from = Math.round(target.left + 40);
-        const to = Math.round(target.left + Math.min(240, target.width - 40));
-        const output = cliCall(['drag', String(from), String(y), String(to), String(y)]);
-        assert(output.includes(`DRAGGED ${from},${y} -> ${to},${y}`), `unexpected drag output: ${output}`);
-        return `${to - from}px selection drag`;
-      });
-
-      await check('click, double click and right click reach the target window', () => {
-        const [target] = notepadWindows();
-        assert(target && target.width > 100, 'no usable Notepad rectangle to click');
-        const x = Math.round(target.left + target.width / 2);
-        const y = Math.round(target.top + Math.min(30, target.height / 4));
-        assert(
-          cliCall(['click', String(x), String(y), 'left']).includes(`CLICKED ${x},${y} left`),
-          'left click failed',
-        );
-        cliCall(['click', String(x), String(y), 'double']);
-        cliCall(['click', String(x), String(y), 'right']);
-        return `three modes inside the window at ${x},${y}`;
-      });
-    }
-  } finally {
-    try {
-      execFileSync('taskkill', ['/IM', 'notepad.exe', '/F'], { stdio: 'ignore', windowsHide: true });
-    } catch {
-
-    }
-  }
-
-  await check('the MCP server answers over stdio with a warm backend', async () => {
-    const { spawn } = await import('node:child_process');
-    const server = spawn(process.execPath, [cli, 'mcp'], { stdio: ['pipe', 'pipe', 'ignore'] });
-    let buffer = '';
-    const replies = new Map();
-    server.stdout.on('data', (chunk) => {
-      buffer += chunk;
-      let newline;
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const message = JSON.parse(buffer.slice(0, newline));
-        buffer = buffer.slice(newline + 1);
-        replies.get(message.id)?.(message);
+  assert.equal(process.platform, 'win32', 'interactive self-test requires Windows');
+  assert.ok(!indicatorIsUp(), 'stop the current computer-use session before self-test');
+  assert.ok(humanStopSeconds() >= 600, 'the human pressed ESC recently; self-test will not restart control');
+  const folder = mkdtempSync(join(tmpdir(), 'dsh-cu-test-'));
+  const state = (name) => join(tmpdir(), `dsh-cu.${name}`);
+  const callCli = (args) => exec(process.execPath, [cli, ...args]);
+  const fixture = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'test', 'desktop-fixture.ps1'), folder], { stdio: 'ignore', windowsHide: true });
+  const server = spawn(process.execPath, [cli, 'mcp'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  let sequence = 0;
+  let buffer = '';
+  const pending = new Map();
+  server.stdout.setEncoding('utf8');
+  server.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      try {
+        const reply = JSON.parse(line);
+        pending.get(reply.id)?.(reply);
+      } catch {
+        for (const resolve of pending.values()) resolve({ error: { message: `invalid protocol output: ${line}` } });
       }
+    }
+  });
+  const rpc = (method, params) => new Promise((resolve, reject) => {
+    const id = ++sequence;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`MCP ${method} timed out`)); }, 60000);
+    pending.set(id, (reply) => { clearTimeout(timer); pending.delete(id); resolve(reply); });
+    server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+  });
+  const tool = async (name, args = {}, error = false) => {
+    const reply = await rpc('tools/call', { name, arguments: args });
+    assert.ok(reply.result, JSON.stringify(reply.error));
+    const text = reply.result.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n');
+    assert.equal(Boolean(reply.result.isError), error, text);
+    return text;
+  };
+  let passed = 0;
+  const check = async (name, action) => {
+    assert.ok(humanStopSeconds() >= 600, 'the human pressed ESC; self-test stops here');
+    const detail = await action();
+    passed++;
+    console.log(`PASS  ${name}${detail ? ` — ${detail}` : ''}`);
+  };
+  console.log(`self-test: isolated workspace ${folder}`);
+  try {
+    await until(() => existsSync(join(folder, 'ready.json')));
+    const target = JSON.parse(readFileSync(join(folder, 'ready.json'), 'utf8'));
+    const init = await rpc('initialize', { protocolVersion: '2025-06-18' });
+    assert.equal(init.result.serverInfo.name, 'dsh-cu');
+    await check('documentation and command surface agree', () => assert.deepEqual(checkContract(root), []));
+    await check('input and focus refuse before the indicator starts', () => {
+      for (const args of [['move', '100', '100'], ['focus', String(target.pid)]]) assert.throws(() => callCli(args), /indicator is not running/);
     });
-    let next = 1;
-    const call = (method, params) =>
-      new Promise((resolve) => {
-        const id = next++;
-        replies.set(id, resolve);
-        server.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    await check('invalid MCP arguments never start the indicator', async () => {
+      assert.match(await tool('type', {}, true), /text is required/);
+      assert.match(await tool('click', { x: 99999, y: 0 }, true), /32767/);
+      assert.ok(!indicatorIsUp());
+    });
+    await check('MCP focus starts a countdown and blocks concurrent input', async () => {
+      const start = Date.now();
+      const focusing = tool('focus', { pid: target.pid });
+      await until(() => existsSync(state('alive')));
+      assert.ok(!existsSync(state('ready')));
+      assert.throws(() => callCli(['move', '100', '100']), /countdown/);
+      assert.throws(() => exec('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'backends', 'windows.ps1'), 'move', '100', '100']), /countdown/);
+      await focusing;
+      assert.ok(Date.now() - start >= 8000);
+      assert.ok(existsSync(state('ready')));
+      assert.ok(!existsSync(state('cursor')));
+      return `${Date.now() - start} ms including cold startup`;
+    });
+    await check('warm backend reads controls and recovers after an error', async () => {
+      assert.match(await tool('ui_tree', { pid: target.pid }), /Test editor/);
+      await tool('ui_tree', { pid: 2147483647 }, true);
+      const start = Date.now();
+      assert.match(await tool('ui_tree', { pid: target.pid }), /Test action/);
+      return `${Date.now() - start} ms for the warm tree`;
+    });
+    await check('off-screen move and drag fail before changing the pointer', async () => {
+      const display = /DISPLAY (\d+)x(\d+)/.exec(callCli(['display']));
+      assert.ok(display);
+      const x = Number(display[1]);
+      const before = callCli(['pos']).split('\n')[0];
+      assert.match(await tool('move', { x, y: 100 }, true), /outside the primary screen/);
+      assert.match(await tool('drag', { x: 100, y: 100, to_x: x, to_y: 100 }, true), /outside the primary screen/);
+      assert.equal(callCli(['pos']).split('\n')[0], before);
+    });
+    await check('typing preserves Unicode, whitespace, tabs and newlines', async () => {
+      await tool('tap', { pid: target.pid, text: 'Test editor' });
+      const text = '  Привет "Minecraft" 😀\tmods\nsecond line  ';
+      await tool('type', { text });
+      await until(() => {
+        try { return readFileSync(join(folder, 'text.txt'), 'utf8').replaceAll('\r', '') === text; }
+        catch { return false; }
       });
-    try {
-      const init = await call('initialize', { protocolVersion: '2025-06-18', capabilities: {} });
-      assert(init.result?.serverInfo?.name === 'dsh-cu', 'no server info');
-      await call('tools/call', { name: 'windows', arguments: {} });
-      const started = Date.now();
-      const warm = await call('tools/call', { name: 'windows', arguments: {} });
-      const elapsed = Date.now() - started;
-      assert(!warm.result.isError, warm.result.content[0].text);
-      assert(elapsed < 400, `a warm call took ${elapsed} ms`);
-      return `warm call ${elapsed} ms`;
-    } finally {
-      server.stdin.end();
-      server.kill();
-    }
-  });
-
-  await check('bad input is rejected before it reaches the backend', () => {
-    const cases = [
-      [['click', 'abc', '10'], /must be an integer/],
-      [['move', '10'], /y is required/],
-      [['click', '99999', '10'], /between -32767 and 32767/],
-      [['move', '10', '-99999'], /between -32767 and 32767/],
-      [['shot', root], /is a directory/],
-      [['click', '10', '10', 'sideways'], /click mode must be/],
-      [['drag', '10', '10', '20'], /to y is required/],
-      [['shot', '--region', '1', '2', '3'], /--region needs x y width height/],
-      [['wheel', '0'], /must not be zero/],
-      [['key', 'Enter', 'sideways'], /phase must be/],
-      [['keys', 'ctrl'], /combination/],
-      [['clipboard', 'paste'], /clipboard action must be/],
-      [['broker', 'restart'], /broker action must be/],
-      [['windows', '--bad'], /windows takes/],
-      [['overlay', '--nonsense'], /unknown overlay flag/],
-      [['overlay', '--announce', '99'], /between 0 and 30/],
-      [['overlay', '--stop', '--restore-cursor'], /not both/],
-      [['overlay', '--stop', '--hide-cursor'], /only applies while starting/],
-      [['tree', '--depth', '0'], /between 1 and 20/],
-      [['find'], /the text to look for is required/],
-      [['read', 'stray'], /flags only/],
-      [['tap', 'Save', '--json'], /takes no --json/],
-      [['tree', '--pid', '1', '--title', 'x'], /pass one of them/],
-      [['nonsense'], /unknown command/],
-    ];
-    process.env.DSH_CU_ALLOW_NO_INDICATOR = '1';
-    try {
-      for (const [args, pattern] of cases) {
-        let message = '';
-        try {
-          cliCall(args);
-        } catch (error) {
-          message = String(error.stderr ?? error.stdout ?? error.message);
-        }
-        assert(pattern.test(message), `${args.join(' ')} was not rejected (${message.trim() || 'no output'})`);
-      }
-    } finally {
-      delete process.env.DSH_CU_ALLOW_NO_INDICATOR;
-    }
-    return `${cases.length} cases rejected`;
-  });
-
-  if (warnings.length > 0) console.log('soft warnings (environment dependent): ' + warnings.length);
-
-  cliCall(['overlay', '--stop']);
-
-  const failed = results.filter((result) => !result.ok);
-  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-  if (failed.length > 0) {
-    process.exitCode = 1;
-    console.log(`failed: ${failed.map((result) => result.name).join(', ')}`);
+      assert.equal(readFileSync(join(folder, 'text.txt'), 'utf8').replaceAll('\r', ''), text);
+      assert.match(readFileSync(state('action'), 'utf8'), /^type \d+ chars$/);
+    });
+    await check('a named button click reaches the fixture', async () => {
+      await tool('tap', { pid: target.pid, text: 'Test action' });
+      await until(() => existsSync(join(folder, 'clicked.txt')));
+    });
+    await check('typed flag names and whitespace remain literal text', async () => {
+      await tool('tap', { pid: target.pid, text: 'Test editor' });
+      await tool('press', { keys: 'ctrl+End' });
+      await tool('type', { text: '-Quiet' });
+      await tool('type', { text: '  ' });
+      await until(() => readFileSync(join(folder, 'text.txt'), 'utf8').endsWith('-Quiet  '));
+    });
+    await check('screenshot returns PNG pixels', async () => {
+      const display = /DISPLAY (\d+)x(\d+)/.exec(callCli(['display']));
+      assert.ok(display);
+      const width = Math.min(1800, Number(display[1]));
+      const height = Math.min(150, Number(display[2]));
+      const x = Math.floor((Number(display[1]) - width) / 2);
+      const result = await rpc('tools/call', { name: 'screenshot', arguments: { x, y: 0, width, height } });
+      assert.ok(!result.result.isError);
+      const data = Buffer.from(result.result.content.find((item) => item.type === 'image').data, 'base64');
+      assert.equal(data.readUInt32BE(16), width);
+      assert.equal(data.readUInt32BE(20), height);
+      writeFileSync(join(folder, 'indicator.png'), data);
+    });
+    await check('invalid key combinations release held modifiers', async () => {
+      await tool('tap', { pid: target.pid, text: 'Test editor' });
+      await tool('press', { keys: 'ctrl+NotAKey' }, true);
+      await tool('press', { keys: 'End' });
+      await tool('type', { text: 'z' });
+      await until(() => readFileSync(join(folder, 'text.txt'), 'utf8').endsWith('  z'));
+      assert.ok(readFileSync(join(folder, 'text.txt'), 'utf8').endsWith('  z'));
+    });
+    await check('stop removes state and leaves the cursor alone', async () => {
+      await tool('indicator', { action: 'stop' });
+      for (const name of ['alive', 'pid', 'ready', 'cursor']) assert.ok(!existsSync(state(name)), name);
+    });
+    await check('stopping during the countdown never reports control ready', async () => {
+      const starting = tool('indicator', { action: 'start' }, true);
+      await until(() => existsSync(state('alive')));
+      writeFileSync(state('stop'), 'self-test');
+      assert.match(await starting, /stopped during the announcement/);
+      assert.ok(!existsSync(state('ready')));
+    });
+    await check('a stop interrupts text within the current chunk', async () => {
+      callCli(['overlay', '--announce', '0']);
+      await tool('focus', { pid: target.pid });
+      await tool('tap', { pid: target.pid, text: 'Test editor' });
+      await tool('press', { keys: 'ctrl+End' });
+      const before = readFileSync(join(folder, 'text.txt'), 'utf8').length;
+      const typing = tool('type', { text: 'x'.repeat(1200) }, true);
+      await until(() => readFileSync(join(folder, 'text.txt'), 'utf8').length >= before + 5);
+      const stoppedAt = Date.now();
+      writeFileSync(state('stop'), 'self-test');
+      await typing;
+      const elapsed = Date.now() - stoppedAt;
+      assert.ok(elapsed < 2000, `stop took ${elapsed} ms`);
+      assert.ok(readFileSync(join(folder, 'text.txt'), 'utf8').length < before + 200);
+      return `${elapsed} ms from stop request to MCP refusal`;
+    });
+    await check('cursor replacement is opt-in and restored on stop', async () => {
+      callCli(['overlay', '--announce', '0', '--hide-cursor']);
+      assert.ok(existsSync(state('cursor')));
+      callCli(['overlay', '--stop']);
+      assert.ok(!existsSync(state('cursor')));
+    });
+    await check('killing an indicator refuses input and repairs its hidden cursor', async () => {
+      callCli(['overlay', '--announce', '0', '--hide-cursor']);
+      const owner = Number(readFileSync(state('pid'), 'utf8').split(' ')[0]);
+      process.kill(owner);
+      await sleep(150);
+      assert.throws(() => callCli(['move', '100', '100']), /indicator is not running/);
+      assert.ok(!existsSync(state('cursor')));
+    });
+    await check('a stale pid record cannot kill the fixture', () => {
+      writeFileSync(state('pid'), `${target.pid} 1`);
+      callCli(['overlay', '--stop']);
+      process.kill(target.pid, 0);
+    });
+    console.log(`${passed}/${passed} checks passed; artifacts: ${folder}`);
+    console.log('Physical ESC and model decision quality require a separate interactive check.');
+  } finally {
+    writeFileSync(join(folder, 'stop'), 'stop');
+    try { callCli(['overlay', '--stop']); } finally { server.stdin.end(); server.kill(); }
+    await sleep(300);
+    if (fixture.exitCode === null) fixture.kill();
   }
 }

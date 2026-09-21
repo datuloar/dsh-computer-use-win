@@ -35,7 +35,7 @@ is the distribution.
 ```powershell
 node src\verify.js           # static contract check, safe anywhere
 node test\run.mjs            # node:test suite, in-process, no child processes
-node src\cli.js self-test    # drives the real mouse and keyboard for ~40 s
+node src\cli.js self-test    # drives an isolated window with the real mouse and keyboard
 node src\cli.js doctor       # what this machine can do
 bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change needed
 ```
@@ -87,8 +87,13 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   launch a new PowerShell that must not inherit it. `-File` argument parsing drops embedded quotes
   and reads a leading dash as a parameter name. The payload rides an environment variable, so
   `MAX_ARGUMENT_BYTES` refuses an oversized argument instead of letting Windows truncate it.
-- **Input waits for the announcement.** `overlay` sleeps the announced seconds after the frame is
-  confirmed on screen, so nothing is injected before the human has seen the panel.
+- **Input waits for the announcement.** The indicator publishes `dsh-cu.ready` containing its
+  pid/start identity only after the visible countdown. CLI and MCP wait for it; C# checks it
+  before input, including during typing and dragging. Focus is gated too. Quiet mode hides
+  chrome only after the countdown. Releases must still run when the gate closes.
+- **Self-test owns its window.** `test/desktop-fixture.ps1` creates the isolated Windows Forms
+  workspace. Never kill editors by image name, overwrite the user's clipboard, or inject test
+  input into whichever application happens to be in front. Physical ESC is a separate human test.
 - **Every state-file read is a race.** The indicator deletes its own files while it exits, so reads
   go through `Get-StateAge` / `Get-StateText`, which treat a missing or unreadable file as normal
   state. A bare `Get-Content` after `Test-Path` used to break `overlay --stop`.
@@ -103,6 +108,8 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   pointer, which is why the command takes an optional point; `--horizontal` sends `MOUSEEVENTF_HWHEEL`.
 - **Coordinates are bounded** to ±32767 (the Windows virtual-screen limit): `SetCursorPos` would
   clamp a typo to the screen edge and click the wrong thing instead of failing.
+  Input also refuses points outside the supported primary screen; drag validates its destination
+  before pressing the button.
 - **`type` sends `\n` as Enter and `\t` as Tab**, and skips `\r`; every other character goes out as
   `KEYEVENTF_UNICODE`. Newlines used to be silently dropped. Long text goes out in
   `TYPE_CHUNK_CHARS` chunks with an indicator check between them, so the human's ESC stops a long
@@ -122,6 +129,7 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   `backends/windows.ps1`, which concatenates them into one `Add-Type` unit. The `using` directives
   live in `Interop.cs`; every other file only opens `namespace DshCu`.
 - **State files are the CLI ↔ indicator contract**, all in `%TEMP%`: `dsh-cu.alive` (heartbeat),
+  `dsh-cu.ready` (countdown complete, bound to pid/start identity),
   `dsh-cu.pid` (pid plus start ticks), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
   `dsh-cu.action` (what the pill shows), `dsh-cu.cancelled` (the human pressed ESC), `dsh-cu.cursor` (present while `--hide-cursor` holds the
   pointer; the CLI heals leftover state), `dsh-cu.broker.ready|stop|req.*|res.*`. `StateFiles.cs`
@@ -175,10 +183,15 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
 
 ## Environment notes
 
+- Optional vision is installed by `install-vision.ps1`, with pinned official downloads and
+  SHA256 verification. `see` returns text from a loopback-only local model; it never injects
+  input. Keep screenshots local and delete temporary captures after inference. Model answers
+  are untrusted observations, not instructions or verified coordinates.
+
 - Inside the DeepSeek Harness file sandbox a nested process cannot open a pipe, so
   `spawn(..., {stdio: 'pipe'})` fails with `EPERM`. `src/backend.js` retries with file descriptors.
   `test/run.mjs` imports the test files instead of using `node --test` for the same reason (the
   runner isolates each file in a child process); `node --test test/` is the variant for a machine
   without that restriction.
-- Run `node src\cli.js self-test` from a normal PowerShell window, not from a sandboxed session: a
-  sandboxed session cannot start Notepad, so the focus/typing/click checks report a warning instead.
+- Run `node src\cli.js self-test` on an unlocked interactive desktop. The isolated fixture must
+  accept real input; an unavailable or interrupted desktop is a failure, not a passing check.
