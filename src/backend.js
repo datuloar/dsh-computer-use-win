@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -83,13 +83,13 @@ export function exec(file, args, extraEnv, timeoutMs = BACKEND_TIMEOUT_MS) {
 function backendFailure(error, timeoutMs) {
   const stdout = String(error.stdout ?? '').trim();
   const stderr = String(error.stderr ?? '').trim();
-  if (stdout || stderr) return new ToolError(stdout || stderr);
-  if (error.signal) {
+  if (error.signal || error.code === 'ETIMEDOUT') {
     return new ToolError(
-      `the backend was stopped after ${Math.round(timeoutMs / 1000)}s (${error.signal}) — ` +
+      `the backend was stopped after ${Math.round(timeoutMs / 1000)}s (${error.signal || 'timeout'}); ` +
         'the machine is busy or a dialog is waiting',
     );
   }
+  if (stdout || stderr) return new ToolError(stdout || stderr);
   return new ToolError(`the backend failed to start (${error.code ?? 'unknown'}) and said nothing`);
 }
 
@@ -204,6 +204,8 @@ export function cursorMayBeHidden() {
 
 export function requireIndicator() {
   if (process.env.DSH_CU_ALLOW_NO_INDICATOR === '1') return;
+  if (indicatorIsUp() && process.env.DSH_CU_OWNER && indicatorOwner() !== process.env.DSH_CU_OWNER)
+    throw new ToolError('another computer-use client owns the desktop; wait for it to stop');
   if (indicatorIsUp() && indicatorProcessAlive() && humanStopSeconds() >= 600) {
     if (indicatorReady()) return;
     throw new ToolError('the on-screen countdown is still running; wait for the announcement to finish');
@@ -223,17 +225,41 @@ export function indicatorReady() {
   }
 }
 
+export function indicatorOwner() {
+  try { return readFileSync(temp('dsh-cu.owner'), 'utf8').trim(); }
+  catch { return ''; }
+}
+
+export function requestIndicatorStop(owner) {
+  if (!owner || indicatorOwner() !== owner) return false;
+  try { writeFileSync(temp('dsh-cu.stop'), `owner ${owner}`); return true; }
+  catch { return false; }
+}
+
+export function checkedOutput(output) {
+  const text = String(output).trim();
+  if (/^ERROR(?:\s|$)/m.test(text)) throw new ToolError(text);
+  return text;
+}
+
 function answerFromBroker(args, timeoutMs) {
   const requestFile = temp(`dsh-cu.broker.req.${process.pid}`);
   const responseFile = temp(`dsh-cu.broker.res.${process.pid}`);
+  const stagedFile = `${requestFile}.tmp`;
   removeQuietly(responseFile);
-  writeFileSync(requestFile, JSON.stringify(args));
+  try {
+    writeFileSync(stagedFile, JSON.stringify(args));
+    renameSync(stagedFile, requestFile);
+  } finally {
+    removeQuietly(stagedFile);
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(responseFile)) {
-      const answer = readFileSync(responseFile, 'utf8');
+    let answer;
+    try { answer = readFileSync(responseFile, 'utf8'); } catch { }
+    if (answer !== undefined) {
       removeQuietly(responseFile);
-      return answer.trim();
+      return checkedOutput(answer);
     }
     waitSync(BROKER_POLL_MS);
   }

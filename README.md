@@ -69,10 +69,12 @@ Without any of them: `node src\cli.js <command>` or `bin\dsh-cu.cmd <command>`.
 The filesystem skill root is scanned live, so no restart is needed for the copy; the profile
 plugin needs `dsh web` restarted once.
 
+OpenCode has a separate distribution: [open-code-computer-use-win](https://github.com/datuloar/open-code-computer-use-win). Install it from that repository. This repository installs the DeepSeek Harness integration.
+
 ## The loop
 
 ```powershell
-dsh-cu overlay                       # the human is warned for 8 s, ESC cancels
+dsh-cu overlay                       # the human is warned for 5 s, ESC cancels
 dsh-cu shot                          # capture the screen, print the path
 dsh-cu click 640 380                 # click there
 dsh-cu type "hello"                  # type into the focused window
@@ -99,6 +101,8 @@ dsh-cu overlay --stop                # stop and clean up
     dsh-cu tree [--pid N | --title <text>] [--depth N] [--all] [--json]   the control tree of a window
     dsh-cu find <text> [--pid N | --title <text>] [--json]   controls whose name contains the text
     dsh-cu tap <text> [--pid N | --title <text>]   click the one control named like that
+    dsh-cu inspect <text> [--pid N | --title <text>] [--max-chars N]   one control value/state as JSON
+    dsh-cu wait-control <text> [--pid N | --title <text>] [--seconds N] [--state exists|enabled]   bounded read-only wait
     dsh-cu move <x> <y>                       move the pointer
     dsh-cu click <x> <y> [left|right|middle|double|triple]   click
     dsh-cu drag <x> <y> <to-x> <to-y>         press, glide to the second point, release
@@ -118,7 +122,7 @@ dsh-cu overlay --stop                # stop and clean up
     dsh-cu display                            primary screen size and DPI
     dsh-cu mcp                                serve the same tools over MCP (stdio)
     dsh-cu doctor                             what this machine can do
-    dsh-cu self-test                          exercise every command
+    dsh-cu self-test                          test Windows/MCP in an isolated window
     dsh-cu overlay --stop                     stop the indicator, restore the cursor
     dsh-cu overlay --restore-cursor           emergency cursor rescue
 
@@ -132,7 +136,7 @@ titles keep their spaces, quotes and leading dashes.
 what sliders, selections and drag-and-drop targets expect; `click` also takes `middle` and
 `triple`.
 
-## As MCP tools (DeepSeek Harness, Claude Code, opencode, Cursor)
+## As MCP tools (DeepSeek Harness, Claude Code, Cursor)
 
 `dsh-cu mcp` serves every command as native tools over MCP stdio: `ui_tree`, `find`, `tap`,
 `read_text`, `screenshot` (returns the image), `click`, `move`, `drag`, `scroll`, `type`, `press`,
@@ -156,7 +160,7 @@ the tools then appear as `mcp__pc__click`, `mcp__pc__ui_tree`, ...:
 ```
 
 Claude Code: `claude mcp add pc -- node C:\path\to\dsh-computer-use\src\mcp.js`.
-opencode and Cursor take the same command in their MCP settings.
+Cursor takes the same command in its MCP settings.
 
 If the human presses ESC, the indicator records it and every input tool refuses for the next ten
 minutes with a message telling the agent to stop and ask — an agent cannot quietly restart the
@@ -250,7 +254,8 @@ All images on this page were taken over a neutral demo window, not a real deskto
   dies, so a killed indicator cannot leave the human blind for the seconds the heartbeat stays
   fresh. Override only deliberately: `DSH_CU_ALLOW_NO_INDICATOR=1`.
 - **The indicator comes up before input is allowed**, and the CLI waits out the full announcement
-  (default 8 s) after the frame is confirmed on screen. The indicator publishes readiness only
+  (default 5 s) after the frame is confirmed on screen. Set `DSH_CU_ANNOUNCE_SECONDS` to an integer
+  from 0 to 30 for CLI/MCP, or use `overlay --announce N` for one CLI session. The indicator publishes readiness only
   after that countdown. CLI, MCP and direct backend input all check it, including concurrent
   calls. `focus` and `wait-window` are gated too. `--quiet` hides chrome only after the countdown.
 - **ESC stops it** — a physical press only; injected ESC is ignored.
@@ -281,7 +286,9 @@ All images on this page were taken over a neutral demo window, not a real deskto
 |---|---|
 | `DSH_CU_ALLOW_NO_INDICATOR=1` | let input through while the indicator is down — deliberate override, nothing else bypasses the gate |
 | `DSH_CU_UI_SCALE=1.5` | scale the indicator on top of the display DPI, for a 4K panel or weak eyes (0.75–4) |
+| `DSH_CU_ANNOUNCE_SECONDS=5` | CLI/MCP countdown from 0 to 30 seconds; explicit CLI `--announce` wins |
 | `DSH_CU_POWERSHELL=powershell` | the default; set it to another PowerShell only if yours lives elsewhere |
+| `DSH_CU_OWNER` | per-client desktop identity, assigned by MCP; leave unset for manual CLI use |
 
 ## Running from inside a sandboxed agent session
 
@@ -348,7 +355,15 @@ on an unlocked desktop you are willing to hand over. It creates its own Windows 
 leaves existing editors and the clipboard alone, and closes only that test window. The test
 fails if the desktop cannot accept input. It refuses to replace an active session or restart
 after a recent human ESC. Screenshots and text evidence are retained in the reported temp folder.
+Each run writes `report.json` with individual outcomes, durations, numeric timing measurements,
+environment details and a SHA256 fingerprint of the tested sources. Failed checks and setup or
+cleanup errors mark the report as failed; an interrupted process leaves its report running.
 Physical ESC and an actual model's ability to finish a task remain separate interactive checks.
+See the [current validation record](docs/VALIDATION.md) for results and limits.
+
+The [UI-TARS comparison](docs/uitars-comparison-2026-10-18.md) records the audited upstream commit,
+current differences and open work. The [benchmark protocol](docs/benchmark-protocol.md) separates
+backend correctness from model task success and defines the evidence required for comparison claims.
 
 ```
 src/cli.js              entry point: argv -> one command call, one error path

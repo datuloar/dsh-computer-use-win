@@ -6,8 +6,9 @@ param(
     [Parameter(Position = 4)][string]$A4,
     [Parameter(Position = 5)][string]$A5,
     [Parameter(Position = 6)][string]$A6,
-    [int]$Announce = 8,
+    [int]$Announce = 5,
     [int]$Depth = 6,
+    [int]$MaxChars = 1000,
     [string]$TargetPid = '',
     [string]$TargetTitle = '',
     [string]$Language = '',
@@ -29,8 +30,9 @@ function Set-Invocation {
     param([object[]]$Arguments)
     $script:Command = [string]$Arguments[0]
     $script:operands = New-Object System.Collections.ArrayList
-    $script:Announce = 8
+    $script:Announce = 5
     $script:Depth = 6
+    $script:MaxChars = 1000
     $script:TargetPid = ''
     $script:TargetTitle = ''
     $script:Language = ''
@@ -40,7 +42,7 @@ function Set-Invocation {
     $script:All = $false
     $script:Json = $false
     $flags = switch ($script:Command) {
-        { $_ -in @('tree', 'find', 'tap') } { @('-Depth', '-TargetPid', '-TargetTitle', '-All', '-Json') }
+        { $_ -in @('tree', 'find', 'tap', 'inspect') } { @('-Depth', '-TargetPid', '-TargetTitle', '-MaxChars', '-All', '-Json') }
         { $_ -in @('overlay', 'overlay-start') } { @('-Announce', '-Quiet', '-HideCursor') }
         'read' { @('-Language', '-Json') }
         'wheel' { @('--horizontal') }
@@ -48,7 +50,7 @@ function Set-Invocation {
     }
     for ($index = 1; $index -lt $Arguments.Count; $index++) {
         $argument = [string]$Arguments[$index]
-        if ($argument -notin $flags -or ($index -eq 1 -and $script:Command -in @('find', 'tap'))) {
+        if ($argument -notin $flags -or ($index -eq 1 -and $script:Command -in @('find', 'tap', 'inspect'))) {
             [void]$script:operands.Add($argument)
             continue
         }
@@ -56,6 +58,7 @@ function Set-Invocation {
         switch ($argument) {
             '-Announce' { $index++; if ($null -ne $next) { $script:Announce = [int]$next } }
             '-Depth' { $index++; if ($null -ne $next) { $script:Depth = [int]$next } }
+            '-MaxChars' { $index++; if ($null -ne $next) { $script:MaxChars = [int]$next } }
             '-TargetPid' { $index++; if ($null -ne $next) { $script:TargetPid = $next } }
             '-TargetTitle' { $index++; if ($null -ne $next) { $script:TargetTitle = $next } }
             '-Language' { $index++; if ($null -ne $next) { $script:Language = $next } }
@@ -97,7 +100,8 @@ $sources = @(
     'PointerRenderer',
     'Indicator',
     'SystemCursors',
-    'UiTree'
+    'UiTree',
+    'ControlState'
 )
 $source = ($sources | ForEach-Object { Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot "csharp\$_.cs") }) -join "`n"
 Add-Type -TypeDefinition $source -ReferencedAssemblies System.Drawing, System.Windows.Forms, UIAutomationClient, UIAutomationTypes, WindowsBase
@@ -175,6 +179,20 @@ function Test-IndicatorProcess($process, [long]$startedTicks) {
     }
 }
 
+function Assert-ClientOwnership {
+    if (-not $env:DSH_CU_OWNER) { return }
+    if ((Get-StateText ([DshCu.StateFiles]::Owner)) -eq $env:DSH_CU_OWNER) { return }
+    $fields = (Get-StateText $pidFile) -split '\s+'
+    $recordedPid = 0
+    $recordedStart = 0L
+    [void][int]::TryParse($fields[0], [ref]$recordedPid)
+    if ($fields.Count -ge 2) { [void][long]::TryParse($fields[1], [ref]$recordedStart) }
+    $recordedProcess = if ($recordedPid -gt 0) { Get-Process -Id $recordedPid -ErrorAction SilentlyContinue } else { $null }
+    if (Test-IndicatorProcess $recordedProcess $recordedStart) {
+        throw 'another computer-use client owns the desktop; wait for it to stop'
+    }
+}
+
 function Clear-Indicator {
     $fields = (Get-StateText $pidFile) -split '\s+'
     $owner = 0
@@ -191,7 +209,7 @@ function Clear-Indicator {
         if (Test-IndicatorProcess $current $ownerStarted) { Stop-Process -InputObject $current -Force -ErrorAction SilentlyContinue }
     }
     if (Test-Path $cursorFile) { [DshCu.SystemCursors]::Restore() }
-    Remove-Item $aliveFile, $stopFile, $pidFile, $actionFile, ([DshCu.StateFiles]::Ready) -Force -ErrorAction SilentlyContinue
+    Remove-Item $aliveFile, $stopFile, $pidFile, $actionFile, ([DshCu.StateFiles]::Ready), ([DshCu.StateFiles]::Owner) -Force -ErrorAction SilentlyContinue
 }
 
 function Resolve-UiWindow {
@@ -340,6 +358,7 @@ function Get-ActionLabel {
         'read' { return 'read the screen' }
         'tree' { return 'read the window tree' }
         'find' { return "find $x" }
+        'inspect' { return "inspect $x" }
         'tap' { return "click $x" }
         'focus' { return "focus pid $x" }
         'focus-title' { return "focus $x" }
@@ -410,6 +429,11 @@ function Invoke-Dispatch {
             [DshCu.UiTree]::EnsureVisibleAt($window, $node.CenterX, $node.CenterY)
             [DshCu.InputInjector]::Click($node.CenterX, $node.CenterY, 'left')
             Write-Output ("TAPPED " + $node.Role + " '" + $node.Label() + "' at " + $node.CenterX + "," + $node.CenterY)
+        }
+        'inspect' {
+            $needle = Arg 0
+            if ([string]::IsNullOrWhiteSpace($needle)) { throw 'inspect needs the name of the control' }
+            Write-Output ([DshCu.ControlState]::Inspect((Resolve-UiWindow), $needle, $MaxChars))
         }
         'move' { [DshCu.InputInjector]::Move((Test-Integer (Arg 0) 'x'), (Test-Integer (Arg 1) 'y')) }
         'click' {
@@ -538,8 +562,8 @@ function Invoke-Dispatch {
         }
         'broker-start' {
             [DshCu.StateFiles]::RequireInput()
-            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, 'broker-loop')
-            Start-Process powershell -Verb RunAs -ArgumentList $arguments | Out-Null
+            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), 'broker-loop')
+            Start-Process powershell -Verb RunAs -ArgumentList $arguments -WindowStyle Hidden | Out-Null
             Write-Output 'BROKER_STARTED'
         }
         'broker-loop' {
@@ -548,6 +572,7 @@ function Invoke-Dispatch {
             while (-not (Test-Path $brokerStop)) {
                 Set-Content -Path $brokerReady -Value ([DateTime]::Now.ToString('O'))
                 $request = Get-ChildItem $brokerRequests -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^dsh-cu\.broker\.req\.\d+$' } |
                     Sort-Object LastWriteTime | Select-Object -First 1
                 if (-not $request) {
                     Start-Sleep -Milliseconds 150
@@ -560,11 +585,14 @@ function Invoke-Dispatch {
                 try {
                     $env:DSH_CU_ARGV = $payload
                     $result = (& powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath 2>&1 | Out-String)
-                    Remove-Item Env:\DSH_CU_ARGV -ErrorAction SilentlyContinue
                 } catch {
                     $result = 'ERROR ' + $_.Exception.Message
+                } finally {
+                    Remove-Item Env:\DSH_CU_ARGV -ErrorAction SilentlyContinue
                 }
-                Set-Content -Path $responsePath -Value $result -Encoding UTF8
+                $stagedResponse = $responsePath + '.tmp'
+                [IO.File]::WriteAllText($stagedResponse, $result, (New-Object System.Text.UTF8Encoding($false)))
+                Move-Item -LiteralPath $stagedResponse -Destination $responsePath -Force
             }
             Remove-Item $brokerReady, $brokerStop -Force -ErrorAction SilentlyContinue
             Remove-Item $brokerAnswers -Force -ErrorAction SilentlyContinue
@@ -600,21 +628,33 @@ function Invoke-Dispatch {
             Write-Output ("EXIT " + $code)
         }
         'overlay-start' {
-            [DshCu.StateFiles]::Write($stopFile, 'stop')
-            Clear-Indicator
-            $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), 'overlay', '-Announce', "$Announce")
-            if ($Quiet) { $arguments += '-Quiet' }
-            if ($HideCursor) { $arguments += '-HideCursor' }
-            $indicatorProcess = Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru
-            for ($attempt = 0; $attempt -lt 60; $attempt++) {
-                Start-Sleep -Milliseconds 250
-                if ($indicatorProcess.HasExited) { throw 'the indicator stopped during the announcement or failed to start' }
-                if ((Get-StateAge $aliveFile) -lt $FreshSeconds) {
-                    Write-Output 'RUNNING'
-                    return
+            if ($Announce -lt 0 -or $Announce -gt 30) { throw 'announce seconds must be between 0 and 30' }
+            $startupLock = New-Object System.Threading.Mutex($false, 'Local\DshCuIndicatorStart')
+            $locked = $false
+            try {
+                try { $locked = $startupLock.WaitOne(20000) }
+                catch [System.Threading.AbandonedMutexException] { $locked = $true }
+                if (-not $locked) { throw 'another indicator startup is still in progress' }
+                Assert-ClientOwnership
+                [DshCu.StateFiles]::Write($stopFile, 'stop')
+                Clear-Indicator
+                $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'), 'overlay', '-Announce', "$Announce")
+                if ($Quiet) { $arguments += '-Quiet' }
+                if ($HideCursor) { $arguments += '-HideCursor' }
+                $indicatorProcess = Start-Process powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+                for ($attempt = 0; $attempt -lt 60; $attempt++) {
+                    Start-Sleep -Milliseconds 250
+                    if ($indicatorProcess.HasExited) { throw 'the indicator stopped during the announcement or failed to start' }
+                    if ((Get-StateAge $aliveFile) -lt $FreshSeconds) {
+                        Write-Output 'RUNNING'
+                        return
+                    }
                 }
+                throw 'the indicator did not come up'
+            } finally {
+                if ($locked) { $startupLock.ReleaseMutex() }
+                $startupLock.Dispose()
             }
-            throw 'the indicator did not come up'
         }
         'overlay-state' {
             if ((Get-StateAge $aliveFile) -gt $FreshSeconds) { Write-Output 'STOPPED' } else { Write-Output 'RUNNING' }
@@ -628,12 +668,25 @@ function Invoke-Dispatch {
         'overlay' {
             $mode = Arg 0
             if ($mode -eq 'stop' -or $mode -eq 'restore-cursor') {
-                if ($mode -eq 'stop') { Set-Content -Path $stopFile -Value ([DateTime]::Now.ToString('O')) }
-                Clear-Indicator
-                if ($mode -eq 'restore-cursor') { [DshCu.SystemCursors]::Restore() }
-                if ($mode -eq 'stop') { Write-Output 'STOPPED' } else { Write-Output 'CURSOR_RESTORED' }
-                return
+                $stopLock = New-Object System.Threading.Mutex($false, 'Local\DshCuIndicatorStart')
+                $locked = $false
+                try {
+                    try { $locked = $stopLock.WaitOne(20000) }
+                    catch [System.Threading.AbandonedMutexException] { $locked = $true }
+                    if (-not $locked) { throw 'another indicator startup is still in progress' }
+                    Assert-ClientOwnership
+                    if ($mode -eq 'stop') { Set-Content -Path $stopFile -Value ([DateTime]::Now.ToString('O')) }
+                    Clear-Indicator
+                    if ($mode -eq 'restore-cursor') { [DshCu.SystemCursors]::Restore() }
+                    if ($mode -eq 'stop') { Write-Output 'STOPPED' } else { Write-Output 'CURSOR_RESTORED' }
+                    return
+                } finally {
+                    if ($locked) { $stopLock.ReleaseMutex() }
+                    $stopLock.Dispose()
+                }
             }
+            if ($Announce -lt 0 -or $Announce -gt 30) { throw 'announce seconds must be between 0 and 30' }
+            Assert-ClientOwnership
             if (Test-Path $stopFile) { Remove-Item $stopFile -Force }
             Clear-Indicator
             $context = New-Object DshCu.Indicator($Quiet, $Announce, [bool]$HideCursor)

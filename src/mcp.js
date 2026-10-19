@@ -1,20 +1,24 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import {
   cursorMayBeHidden,
   forgetHumanStop,
   humanStopSeconds,
   indicatorIsUp,
+  indicatorOwner,
   indicatorProcessAlive,
   indicatorReady,
   ps,
   requireIndicator,
+  requestIndicatorStop,
   serveCommand,
   sleep,
   useHost,
 } from './backend.js';
-import { findCommand } from './commands.js';
+import { commandIsGated, findCommand } from './commands.js';
 import { BackendHost } from './host.js';
 import { ToolError } from './tool-error.js';
 
@@ -22,6 +26,21 @@ const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const HUMAN_STOP_HOLD_SECONDS = 600;
 const MAX_WAIT_SECONDS = 30;
+const OWNER = process.env.DSH_CU_OWNER || `mcp:${randomUUID()}`;
+const requests = new Map();
+let activeRequest = null;
+let runningHost = null;
+let closing = false;
+
+async function stopOwnedIndicator() {
+  const deadline = Date.now() + 2000;
+  let observed = indicatorOwner() === OWNER;
+  while (Date.now() < deadline) {
+    observed = requestIndicatorStop(OWNER) || observed;
+    if (observed && indicatorOwner() !== OWNER) return;
+    await sleep(50);
+  }
+}
 
 const INSTRUCTIONS =
   'Windows desktop control. Read before acting: ui_tree/find list controls with a point to click, ' +
@@ -39,8 +58,8 @@ const region = {
 };
 
 const target = {
-  window: { type: 'string', description: 'part of the window title; default is the foreground window' },
-  pid: { type: 'integer', description: 'process id of the window instead of a title' },
+  window: { type: 'string', description: 'title substring; default foreground' },
+  pid: { type: 'integer', description: 'window process id' },
 };
 
 const point = {
@@ -80,7 +99,7 @@ export const TOOLS = [
   {
     name: 'see',
     description: 'See the screen through local vision and get a text answer. Ask a specific question; crop to the relevant window for speed.',
-    inputSchema: schema({ question: { type: 'string' }, ...region }, ['question']),
+    inputSchema: schema({ question: { type: 'string', maxLength: 2000 }, ...region }, ['question']),
     cli: (args) => ['see', args.question, ...regionArgs(args, '--region')],
   },
   {
@@ -96,9 +115,14 @@ export const TOOLS = [
   },
   {
     name: 'find',
-    description: 'Controls in a window whose name contains the text, each with a clickable point.',
-    inputSchema: schema({ text: { type: 'string' }, ...target }, ['text']),
-    cli: (args) => ['find', String(args.text), ...targetArgs(args)],
+    description: 'Find controls by name/id. Set details to read one unique control value and state; protected values stay hidden.',
+    inputSchema: schema({ text: { type: 'string' }, ...target, details: { type: 'boolean' },
+      max_chars: { type: 'integer', minimum: 1, maximum: 2000 } }, ['text']),
+    cli: (args) => {
+      if (args.max_chars !== undefined && !args.details) throw new ToolError('max_chars requires details: true');
+      return [args.details ? 'inspect' : 'find', args.text, ...targetArgs(args),
+        ...(args.max_chars !== undefined ? ['--max-chars', String(args.max_chars)] : [])];
+    },
   },
   {
     name: 'tap',
@@ -128,7 +152,7 @@ export const TOOLS = [
   },
   {
     name: 'click',
-    description: 'Click at a screen point.',
+    description: 'Click an observed physical screen point. Prefer tap for a uniquely named control; refresh points after layout changes.',
     inputSchema: schema(
       { ...point, button: { type: 'string', enum: ['left', 'right', 'middle', 'double', 'triple'] } },
       ['x', 'y'],
@@ -172,8 +196,8 @@ export const TOOLS = [
   },
   {
     name: 'type',
-    description: 'Type text into the focused control. A newline is Enter, a tab is Tab.',
-    inputSchema: schema({ text: { type: 'string' } }, ['text']),
+    description: 'Type up to 2000 characters into the focused control; newline is Enter and tab is Tab. Inspect partial text before retrying a failed call.',
+    inputSchema: schema({ text: { type: 'string', maxLength: 2000 } }, ['text']),
     gated: true,
     cli: (args) => ['type', String(args.text)],
   },
@@ -206,11 +230,17 @@ export const TOOLS = [
   },
   {
     name: 'wait',
-    description: 'Wait for an animation, a page load or a game round, up to 30 seconds.',
-    inputSchema: schema({ seconds: { type: 'number', minimum: 0, maximum: MAX_WAIT_SECONDS } }, ['seconds']),
-    local: async (args) => {
+    description: 'Wait up to 30 seconds. With text, poll a named control until it exists or is enabled; no input is sent.',
+    inputSchema: schema({ seconds: { type: 'number', minimum: 0, maximum: MAX_WAIT_SECONDS }, ...target,
+      text: { type: 'string' }, state: { type: 'string', enum: ['exists', 'enabled'] } }, ['seconds']),
+    local: async (args, signal) => {
+      if (args.text !== undefined)
+        return runCli(['wait-control', args.text, ...targetArgs(args), '--seconds', String(args.seconds),
+          ...(args.state ? ['--state', args.state] : [])], signal);
+      if (args.window !== undefined || args.pid !== undefined || args.state !== undefined)
+        throw new ToolError('a conditional wait requires text');
       const seconds = Math.max(0, Math.min(MAX_WAIT_SECONDS, Number(args.seconds) || 0));
-      await sleep(seconds * 1000);
+      await delay(seconds * 1000, undefined, { signal });
       return `WAITED ${seconds}s`;
     },
   },
@@ -227,7 +257,10 @@ export const TOOLS = [
       ['action'],
     ),
     local: async (args) => {
-      if (args.action === 'stop') return runCli(['overlay', '--stop']);
+      if (args.action === 'stop') {
+        if (indicatorIsUp() && indicatorOwner() !== OWNER) return 'STOPPED (this client does not own the active indicator)';
+        return runCli(['overlay', '--stop']);
+      }
       if (args.action !== 'start') throw new ToolError('action must be start or stop');
       refuseAfterHumanStop();
       return startIndicator(Boolean(args.hide_cursor));
@@ -245,14 +278,14 @@ function captureConsole() {
   }
 }
 
-async function runCli(argv) {
+async function runCli(argv, signal) {
   const [name, ...args] = argv;
   const command = findCommand(name);
   const previous = sink;
   sink = [];
   try {
-    if (command.gated) requireIndicator();
-    await command.run(args);
+    if (commandIsGated(command, args)) requireIndicator();
+    await command.run(args, { signal });
     return sink.join('\n').trim();
   } finally {
     sink = previous;
@@ -270,6 +303,8 @@ function refuseAfterHumanStop() {
 }
 
 async function startIndicator(hideCursor) {
+  if (indicatorIsUp() && indicatorOwner() !== OWNER)
+    throw new ToolError('another computer-use client owns the desktop; wait for it to stop');
   forgetHumanStop();
   return runCli(['overlay', ...(hideCursor ? ['--hide-cursor'] : [])]);
 }
@@ -278,6 +313,7 @@ async function ensureIndicator() {
   refuseAfterHumanStop();
   if (cursorMayBeHidden() && !indicatorProcessAlive()) await ps(['overlay', 'restore-cursor']);
   if (indicatorIsUp() && indicatorProcessAlive()) {
+    if (indicatorOwner() !== OWNER) throw new ToolError('another computer-use client owns the desktop; wait for it to stop');
     const deadline = Date.now() + 35_000;
     while (!indicatorReady()) {
       refuseAfterHumanStop();
@@ -291,15 +327,18 @@ async function ensureIndicator() {
   return `${await startIndicator(false)}\n`;
 }
 
-async function callTool(name, args) {
+async function callTool(name, args, signal) {
   const tool = TOOLS.find((entry) => entry.name === name);
   if (!tool) throw new ToolError(`unknown tool "${name}"`);
   const input = args === undefined ? {} : args;
   validateArguments(tool.inputSchema, input);
-  if (tool.local) return { content: [{ type: 'text', text: await tool.local(input) }] };
+  signal?.throwIfAborted();
+  if (tool.local) return { content: [{ type: 'text', text: await tool.local(input, signal) }] };
   const argv = tool.cli(input);
   const preface = tool.gated ? await ensureIndicator() : '';
+  signal?.throwIfAborted();
   const text = `${preface}${await runCli(argv)}`.trim();
+  signal?.throwIfAborted();
   const content = [{ type: 'text', text }];
   if (tool.image) {
     const saved = /^SAVED (.+) \d+ bytes$/m.exec(text);
@@ -330,6 +369,8 @@ function validateArguments(schema, args) {
     }
     if (spec.type === 'string' && (name === 'text' ? value.length === 0 : !value.trim()))
       throw new ToolError(`${name} must not be empty`);
+    if (spec.maxLength !== undefined && value.length > spec.maxLength)
+      throw new ToolError(`${name} must be at most ${spec.maxLength} characters; split it into smaller calls`);
     if (spec.enum && !spec.enum.includes(value)) throw new ToolError(`${name} must be ${spec.enum.join(', ')}`);
   }
   if ('notches' in args && (args.x === undefined) !== (args.y === undefined))
@@ -346,10 +387,24 @@ function serial(task) {
 
 export async function handle(message) {
   if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
-    if (message && message.id !== undefined) return failure(message.id, -32600, 'invalid request');
-    return null;
+    return failure(message?.id ?? null, -32600, 'invalid request');
   }
   const { id, method, params } = message;
+  if (id !== undefined && id !== null && typeof id !== 'string' && (typeof id !== 'number' || !Number.isFinite(id)))
+    return failure(null, -32600, 'invalid request id');
+  if (method === 'notifications/cancelled') {
+    const request = requests.get(params?.requestId);
+    if (request) {
+      request.controller.abort(new ToolError('the tool call was cancelled; observe the desktop before retrying'));
+      if (activeRequest === request) {
+        if (request.changesControl || indicatorOwner() === OWNER) request.cleanup = stopOwnedIndicator();
+        request.cancelTimer = setTimeout(() => {
+          if (activeRequest === request) runningHost?.kill(new ToolError('the tool call was cancelled; input was stopped'));
+        }, 1000);
+      }
+    }
+    return null;
+  }
   if (id === undefined) return null;
   switch (method) {
     case 'initialize': {
@@ -367,20 +422,35 @@ export async function handle(message) {
       return success(id, {
         tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
       });
-    case 'tools/call':
+    case 'tools/call': {
+      if (requests.has(id)) return failure(id, -32600, 'a request with this id is already running');
+      const request = {
+        controller: new AbortController(),
+        changesControl: Boolean(TOOLS.find((tool) => tool.name === params?.name)?.gated)
+          || (params?.name === 'indicator' && params?.arguments?.action === 'start'),
+      };
+      requests.set(id, request);
       return serial(async () => {
         let result;
         try {
-          result = await callTool(params?.name, params?.arguments);
+          if (closing) throw new ToolError('the MCP connection is closing');
+          activeRequest = request;
+          result = await callTool(params?.name, params?.arguments, request.controller.signal);
         } catch (error) {
           const text = error instanceof ToolError ? error.message : `${error.message}`;
           result = { content: [{ type: 'text', text }], isError: true };
+        } finally {
+          if (request.cleanup) await request.cleanup;
+          clearTimeout(request.cancelTimer);
+          activeRequest = null;
+          requests.delete(id);
         }
         if (indicatorIsUp() && indicatorProcessAlive()) {
           result.content.push({ type: 'text', text: 'Desktop control is still ON. Call indicator with action="stop" before switching to shell work or replying. Idle shutdown: 60s without a desktop command.' });
         }
         return success(id, result);
       });
+    }
     default:
       return failure(id, -32601, `method not found: ${method}`);
   }
@@ -395,11 +465,13 @@ function failure(id, code, message) {
 }
 
 export function serve() {
+  process.env.DSH_CU_OWNER = OWNER;
   captureConsole();
   const host = new BackendHost(serveCommand());
+  runningHost = host;
   useHost(host);
   const write = (response) => {
-    if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
+    if (response && !closing) process.stdout.write(`${JSON.stringify(response)}\n`);
   };
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   lines.on('line', (line) => {
@@ -413,10 +485,26 @@ export function serve() {
     }
     Promise.resolve(handle(message)).then(write, (error) => write(failure(message.id ?? null, -32603, error.message)));
   });
-  lines.on('close', () => {
-    host.kill();
-    process.exit(0);
-  });
+  const shutdown = () => {
+    if (closing) return;
+    closing = true;
+    for (const request of requests.values()) request.controller.abort(new ToolError('the MCP connection closed'));
+    requestIndicatorStop(OWNER);
+    setTimeout(() => { host.kill(); useHost(null); }, 1000);
+    const deadline = Date.now() + 2000;
+    const finish = () => {
+      requestIndicatorStop(OWNER);
+      if (Date.now() >= deadline) process.exit(0);
+      else setTimeout(finish, 50);
+    };
+    finish();
+  };
+  lines.on('close', shutdown);
+  process.stdin.on('error', shutdown);
+  process.stdout.on('error', shutdown);
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+  process.once('exit', () => requestIndicatorStop(OWNER));
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) serve();

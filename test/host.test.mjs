@@ -53,3 +53,100 @@ test('a broken input pipe rejects the command and resets the host', async () => 
   await assert.rejects(host.call(['windows'], 1000), /input pipe failed/);
   assert.equal(host.child, null);
 });
+
+test('a short call deadline includes cold startup and leaves the next call recoverable', async () => {
+  const stalled = child();
+  const next = child();
+  const children = [stalled, next];
+  let killed = false;
+  stalled.kill = () => { killed = true; };
+  const host = new BackendHost({ command: 'fake', args: [], spawnProcess: () => children.shift(), startTimeoutMs: 1000 });
+  await assert.rejects(host.call(['inspect'], 10), /stopped after/);
+  assert.equal(killed, true);
+  assert.equal(host.ready, null);
+  next.stdin.write = () => queueMicrotask(() => next.stdout.emit('data', 'OK\n\u001eDSH-CU-END 0\n'));
+  const recovered = host.call(['windows'], 1000);
+  await new Promise((done) => setImmediate(done));
+  next.stdout.emit('data', '\u001eDSH-CU-END READY\n');
+  assert.equal(await recovered, 'OK');
+  host.kill();
+});
+
+test('late READY cannot send a command after its deadline before timers are serviced', async () => {
+  const process = child();
+  let writes = 0;
+  process.stdin.write = () => { writes++; };
+  const host = new BackendHost({ command: 'fake', args: [], spawnProcess: () => {
+    queueMicrotask(() => {
+      const until = performance.now() + 15;
+      while (performance.now() < until) {}
+      process.stdout.emit('data', '\u001eDSH-CU-END READY\n');
+    });
+    return process;
+  } });
+  await assert.rejects(host.call(['type', 'must not execute'], 1), /stopped after/);
+  assert.equal(writes, 0);
+  assert.equal(host.child, null);
+});
+
+test('a synchronous spawn failure does not poison the next startup', async () => {
+  const next = child();
+  let attempts = 0;
+  const host = new BackendHost({ command: 'fake', args: [], spawnProcess: () => {
+    if (attempts++ === 0) throw new Error('ENOENT');
+    return next;
+  } });
+  await assert.rejects(host.start(), /ENOENT/);
+  assert.equal(host.ready, null);
+  const starting = host.start();
+  next.stdout.emit('data', '\u001eDSH-CU-END READY\n');
+  await starting;
+  host.kill();
+});
+
+test('stopping a host settles startup and an in-flight command immediately', async () => {
+  const process = child();
+  const host = new BackendHost({ command: 'fake', args: [], spawnProcess: () => process });
+  const first = host.start();
+  host.kill();
+  await assert.rejects(first, /stopped/);
+  const second = host.start();
+  process.stdout.emit('data', '\u001eDSH-CU-END READY\n');
+  await second;
+  const pending = host.call(['windows'], 1000);
+  await new Promise((done) => setImmediate(done));
+  host.kill();
+  await assert.rejects(pending, /stopped/);
+});
+
+test('startup diagnostics survive an early exit and a startup timeout resets the host', async () => {
+  const process = child();
+  const host = new BackendHost({ command: 'fake', args: [], spawnProcess: () => process, startTimeoutMs: 10 });
+  const first = host.start();
+  process.stderr.emit('data', 'C# compilation failed');
+  process.emit('exit', 1);
+  await assert.rejects(first, /C# compilation failed/);
+  await assert.rejects(host.start(), /did not start within/);
+  assert.equal(host.ready, null);
+  assert.equal(host.child, null);
+});
+
+test('synchronous pipe errors and command timeouts allow a later command to recover', async () => {
+  const process = child();
+  const host = new BackendHost({ command: 'fake', args: [], spawnProcess: () => process });
+  const start = async () => {
+    const ready = host.start();
+    process.stdout.emit('data', '\u001eDSH-CU-END READY\n');
+    await ready;
+  };
+  await start();
+  process.stdin.write = () => { throw new Error('broken pipe'); };
+  await assert.rejects(host.call(['windows'], 1000), /input pipe failed/);
+  await start();
+  process.stdin.write = () => {};
+  await assert.rejects(host.call(['windows'], 10), /stopped after/);
+  await start();
+  process.stdin.write = () => queueMicrotask(() => process.stdout.emit('data', 'OK\r\n\u001eDSH-CU-END 0\n'));
+  assert.equal(await host.call(['windows']), 'OK');
+  host.kill();
+});

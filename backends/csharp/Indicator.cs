@@ -32,9 +32,20 @@ public class Indicator : ApplicationContext
     private long _actionStamp;
     private double _actionAt;
     private bool _ready;
+    private System.Threading.Mutex _ownership;
 
     public Indicator(bool quiet, int announceSeconds, bool hideCursor)
     {
+        _ownership = new System.Threading.Mutex(false, "Local\\DshCuIndicator");
+        bool acquired;
+        try { acquired = _ownership.WaitOne(0); }
+        catch (System.Threading.AbandonedMutexException) { acquired = true; }
+        if (!acquired)
+        {
+            _ownership.Dispose();
+            _ownership = null;
+            throw new InvalidOperationException("another indicator already owns the desktop");
+        }
         _quiet = quiet;
         _announceSeconds = announceSeconds;
         _pointerRenderer = new PointerRenderer(System.Windows.Forms.Cursor.Position, hideCursor);
@@ -43,6 +54,7 @@ public class Indicator : ApplicationContext
         StateFiles.Delete(StateFiles.Ready);
         StateFiles.Write(StateFiles.Touch, DateTime.UtcNow.ToString("O"));
         StateFiles.Write(StateFiles.Pid, Process.GetCurrentProcess().Id + " " + StartTicks());
+        StateFiles.Write(StateFiles.Owner, Environment.GetEnvironmentVariable("DSH_CU_OWNER") ?? "");
         StateFiles.Delete(StateFiles.Action);
         if (hideCursor) SystemCursors.Hide();
 
@@ -138,7 +150,7 @@ public class Indicator : ApplicationContext
 
     private bool StopRequested()
     {
-        if (_finished || System.IO.File.Exists(StateFiles.Stop))
+        if (_finished || StateFiles.StopRequested())
         {
             if (_escaped) StateFiles.Write(StateFiles.HumanStop, DateTime.UtcNow.ToString("O"));
             StateFiles.Delete(StateFiles.Stop);
@@ -248,6 +260,7 @@ public class Indicator : ApplicationContext
         {
             StateFiles.Delete(StateFiles.Stop);
             StateFiles.Delete(StateFiles.Pid);
+            StateFiles.Delete(StateFiles.Owner);
             StateFiles.Delete(StateFiles.Touch);
             StateFiles.Delete(StateFiles.Heartbeat);
             StateFiles.Delete(StateFiles.Ready);
@@ -259,6 +272,7 @@ public class Indicator : ApplicationContext
             if (_pointer != null) _pointer.Dispose();
             if (_panel != null) _panel.Dispose();
             if (_edge != null) _edge.Dispose();
+            if (_ownership != null) { _ownership.ReleaseMutex(); _ownership.Dispose(); _ownership = null; }
         }
         base.Dispose(disposing);
     }

@@ -104,27 +104,39 @@ public static class InputInjector
 
     public static void Type(string text)
     {
-        foreach (char character in text)
+        int completed = 0;
+        try
         {
-            if (character == '\r') continue;
-            if (character == '\n')
+            foreach (char character in text)
             {
-                Press("Enter");
-                Release("Enter");
+                if (character == '\r') continue;
+                if (character == '\n')
+                {
+                    Press("Enter");
+                    Release("Enter");
+                    completed++;
+                    System.Threading.Thread.Sleep(TextGapMs);
+                    continue;
+                }
+                if (character == '\t')
+                {
+                    Press("Tab");
+                    Release("Tab");
+                    completed++;
+                    System.Threading.Thread.Sleep(TextGapMs);
+                    continue;
+                }
+                KeyEvent(0, character, Native.KEYEVENTF_UNICODE, false);
                 System.Threading.Thread.Sleep(TextGapMs);
-                continue;
-            }
-            if (character == '\t')
-            {
-                Press("Tab");
-                Release("Tab");
+                KeyEvent(0, character, Native.KEYEVENTF_UNICODE, true);
+                completed++;
                 System.Threading.Thread.Sleep(TextGapMs);
-                continue;
             }
-            KeyEvent(0, character, Native.KEYEVENTF_UNICODE, false);
-            System.Threading.Thread.Sleep(TextGapMs);
-            KeyEvent(0, character, Native.KEYEVENTF_UNICODE, true);
-            System.Threading.Thread.Sleep(TextGapMs);
+        }
+        catch (Exception error)
+        {
+            throw new InvalidOperationException("typing stopped after " + completed + " of " + text.Length +
+                " chars in this chunk; inspect the field before retrying, because some text may already be present. " + error.Message, error);
         }
         Console.WriteLine("TYPED " + text.Length + " chars");
     }

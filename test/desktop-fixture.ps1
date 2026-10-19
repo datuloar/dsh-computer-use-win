@@ -1,6 +1,7 @@
 param([string]$Folder)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -Namespace DshCuTest -Name ClipboardSequence -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();'
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'DSH Computer Use Test ' + (Split-Path $Folder -Leaf)
 $form.Size = New-Object System.Drawing.Size(980, 620)
@@ -23,6 +24,27 @@ $edit.Size = New-Object System.Drawing.Size(900, 320)
 $form.Controls.Add($edit)
 $encoding = New-Object System.Text.UTF8Encoding($false, $false)
 $edit.Add_TextChanged({ [IO.File]::WriteAllText((Join-Path $Folder 'text.txt'), $edit.Text, $encoding) })
+$value = New-Object System.Windows.Forms.TextBox
+$value.AccessibleName = 'Test value'
+$value.ReadOnly = $true
+$value.Text = '  sample "value" \path  '
+$value.Location = New-Object System.Drawing.Point(440, 24)
+$value.Size = New-Object System.Drawing.Size(210, 28)
+$form.Controls.Add($value)
+$password = New-Object System.Windows.Forms.TextBox
+$password.AccessibleName = 'Test password'
+$password.UseSystemPasswordChar = $true
+$password.Text = 'fixture-secret-only'
+$password.Location = New-Object System.Drawing.Point(680, 24)
+$password.Size = New-Object System.Drawing.Size(232, 28)
+$form.Controls.Add($password)
+$toggle = New-Object System.Windows.Forms.CheckBox
+$toggle.AccessibleName = 'Test toggle'
+$toggle.Text = 'State'
+$toggle.Checked = $true
+$toggle.Location = New-Object System.Drawing.Point(330, 24)
+$toggle.Size = New-Object System.Drawing.Size(98, 28)
+$form.Controls.Add($toggle)
 $button = New-Object System.Windows.Forms.Button
 $button.Text = 'Test action'
 $button.AccessibleName = 'Test action'
@@ -30,15 +52,77 @@ $button.Location = New-Object System.Drawing.Point(32, 430)
 $button.Size = New-Object System.Drawing.Size(180, 50)
 $button.Add_Click({ [IO.File]::WriteAllText((Join-Path $Folder 'clicked.txt'), 'clicked') })
 $form.Controls.Add($button)
+$delayed = New-Object System.Windows.Forms.Button
+$delayed.AccessibleName = 'Delayed control'
+$delayed.Text = 'Delayed control'
+$delayed.Enabled = $false
+$delayed.Location = New-Object System.Drawing.Point(32, 490)
+$delayed.Size = New-Object System.Drawing.Size(180, 32)
+$form.Controls.Add($delayed)
+$variant = New-Object System.Windows.Forms.Button
+$variant.AccessibleName = 'Delayed control variant'
+$variant.Text = 'Other action'
+$variant.Location = New-Object System.Drawing.Point(32, 532)
+$variant.Size = New-Object System.Drawing.Size(180, 28)
+$variant.Add_Click({ [IO.File]::WriteAllText((Join-Path $Folder 'wrong-delayed-click.txt'), 'clicked') })
+$form.Controls.Add($variant)
+$script:enableControlAt = $null
+$cover = New-Object System.Windows.Forms.Form
+$cover.Text = 'DSH Test covering window'
+$cover.FormBorderStyle = 'None'
+$cover.StartPosition = 'Manual'
+$cover.ShowInTaskbar = $false
+$cover.TopMost = $true
+$decoy = New-Object System.Windows.Forms.Button
+$decoy.Text = 'Covered target'
+$decoy.Dock = 'Fill'
+$decoy.Add_Click({ [IO.File]::WriteAllText((Join-Path $Folder 'decoy-clicked.txt'), 'clicked') })
+$cover.Controls.Add($decoy)
+for ($index = 0; $index -lt 22; $index++) {
+    $candidate = New-Object System.Windows.Forms.Button
+    $candidate.AccessibleName = if ($index -eq 0 -or $index -eq 21) { 'Ambiguous target' } else { 'Ambiguous target variant ' + $index }
+    $candidate.Text = 'Candidate ' + $index
+    $candidate.Location = New-Object System.Drawing.Point((250 + ($index % 5) * 132), (430 + [Math]::Floor($index / 5) * 26))
+    $candidate.Size = New-Object System.Drawing.Size(128, 24)
+    $form.Controls.Add($candidate)
+}
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 $script:presented = $false
 $timer.Add_Tick({
+    if ($null -ne $script:enableControlAt -and [DateTime]::UtcNow -ge $script:enableControlAt) {
+        $delayed.Enabled = $true
+        $script:enableControlAt = $null
+    }
     if (-not $script:presented) {
         $script:presented = $true
         $form.Hide()
         $form.Show()
         $form.Activate()
+    }
+    $requestPath = Join-Path $Folder 'request.json'
+    if (Test-Path -LiteralPath $requestPath) {
+        $request = [IO.File]::ReadAllText($requestPath) | ConvertFrom-Json
+        $response = @{ id = $request.id }
+        try {
+            switch ($request.action) {
+                'clipboard' { $response.sequence = [DshCuTest.ClipboardSequence]::GetClipboardSequenceNumber() }
+                'cover' {
+                    $cover.Bounds = $form.RectangleToScreen($button.Bounds)
+                    $cover.Show($form)
+                    $cover.BringToFront()
+                }
+                'uncover' { $cover.Hide(); $form.Activate() }
+                'delay-control' {
+                    $delayed.Enabled = $false
+                    $script:enableControlAt = [DateTime]::UtcNow.AddMilliseconds(1200)
+                }
+                default { throw 'unknown fixture action' }
+            }
+        } catch { $response.error = $_.Exception.Message }
+        [IO.File]::WriteAllText((Join-Path $Folder 'response.tmp'), (ConvertTo-Json $response), $encoding)
+        Remove-Item -LiteralPath $requestPath
+        Move-Item -LiteralPath (Join-Path $Folder 'response.tmp') -Destination (Join-Path $Folder 'response.json') -Force
     }
     if (Test-Path (Join-Path $Folder 'stop')) { $form.Close() }
 })
@@ -48,4 +132,4 @@ $form.Add_Shown({
     $timer.Start()
 })
 try { [System.Windows.Forms.Application]::Run($form) }
-finally { $timer.Dispose(); $form.Dispose() }
+finally { $timer.Dispose(); $cover.Dispose(); $form.Dispose() }

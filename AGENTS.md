@@ -27,6 +27,7 @@ is the distribution.
 | `src/mcp.js` | the MCP stdio server: tool table, argument mapping onto CLI commands, auto-started indicator, ESC hold |
 | `src/host.js` | the warm backend: one `windows.ps1 serve` process, JSON lines in, output plus an end marker out |
 | `backends/csharp/UiTree.cs` | UI Automation: window lookup, the control tree, `find`/`tap` matching, the covered-window guard |
+| `backends/csharp/ControlState.cs`, `src/control-wait.js` | bounded read-only control values and cancellable readiness polling |
 | `SKILL.md` | what the agent reads: when to use it, the loop, the safety rules |
 | `test/*.test.mjs`, `test/run.mjs` | `node:test` suite for the pure parts |
 
@@ -91,6 +92,8 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   pid/start identity only after the visible countdown. CLI and MCP wait for it; C# checks it
   before input, including during typing and dragging. Focus is gated too. Quiet mode hides
   chrome only after the countdown. Releases must still run when the gate closes.
+- **The countdown defaults to five seconds.** CLI/MCP use `DSH_CU_ANNOUNCE_SECONDS` (0 to 30);
+  explicit CLI `--announce` wins. A bad duration must not prevent stop or cursor recovery.
 - **Self-test owns its window.** `test/desktop-fixture.ps1` creates the isolated Windows Forms
   workspace. Never kill editors by image name, overwrite the user's clipboard, or inject test
   input into whichever application happens to be in front. Physical ESC is a separate human test.
@@ -117,6 +120,8 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
 - **Every backend call has a timeout** (60 s, 5 min for `run`) so a wedged dialog or a busy machine
   cannot hang an agent forever; the error names the timeout. The broker timeout scales with the
   payload, because a long `type` legitimately takes longer than a click.
+  A warm-host call's budget includes cold startup. READY received after the deadline must not
+  write the command to the backend before the timeout callback gets a chance to run.
 - **The backend prints one `ERROR <message>` line** for a failure (see the `trap` in
   `backends/windows.ps1`); `src/backend.js` turns that into a `ToolError`. Do not print PowerShell
   error formatting at the user. The `run` branch is the exception that proves it: with
@@ -130,7 +135,7 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   live in `Interop.cs`; every other file only opens `namespace DshCu`.
 - **State files are the CLI ↔ indicator contract**, all in `%TEMP%`: `dsh-cu.alive` (heartbeat),
   `dsh-cu.ready` (countdown complete, bound to pid/start identity),
-  `dsh-cu.pid` (pid plus start ticks), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
+  `dsh-cu.pid` (pid plus start ticks), `dsh-cu.owner` (client identity), `dsh-cu.touch` (idle watchdog), `dsh-cu.stop`,
   `dsh-cu.action` (what the pill shows), `dsh-cu.cancelled` (the human pressed ESC), `dsh-cu.cursor` (present while `--hide-cursor` holds the
   pointer; the CLI heals leftover state), `dsh-cu.broker.ready|stop|req.*|res.*`. `StateFiles.cs`
   owns the paths and the PowerShell host reads them from there, so a name is written once. Both sides treat a heartbeat older than 5 s as "gone"; an
@@ -163,6 +168,13 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   `UiTree.Usable` refuses it instead of printing coordinates that are not on screen.
 - **`tap` never clicks blind.** It clicks only a single match (exact names win over substrings) and
   only after `EnsureVisibleAt` confirms the point belongs to the target window.
+- **Exact names precede enabled filtering.** Disabled exact matches must not redirect input to an
+  enabled substring. Enabled controls win within the same name class, including an editor whose
+  disabled scrollbars inherit its name. Ambiguous remaining matches refuse selection.
+- **Control values are explicit reads.** `find` with MCP `details: true` maps to CLI `inspect`.
+  Check password metadata before any text pattern and fail closed if it is unavailable. Preserve
+  whitespace and expose truncation; a prefix never proves an exact value. Read-only waits use
+  the same inspection, bound each backend call by the remaining deadline, and honor cancellation.
 - **OCR is WinRT and lives in PowerShell.** `Windows.Media.Ocr` has no projection for the .NET
   Framework compiler, so `Read-ScreenText` in `backends/windows.ps1` does it with the
   `ContentType = WindowsRuntime` type syntax and an `AsTask` awaiter. Small regions are upscaled
@@ -180,6 +192,21 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   DinoRemote, which does the same trick) — do not "repair" that case, it is not ours.
 - **Do not solve captchas in a delivered feature.** The tool has no captcha solver and the skill
   says so; what an operator clicks on their own machine is their decision, not a product claim.
+- **Keep the distributions separate.** This repository targets DeepSeek Harness. OpenCode is maintained
+  in `datuloar/open-code-computer-use-win` and its own checkout. Do not add its installer, plugin,
+  theme, packaging or mandatory contract checks here. Shared backend fixes may be applied independently.
+- **Control ownership is explicit.** `dsh-cu.owner` binds the indicator to a client; a named mutex
+  serializes startup and another guards the indicator lifetime. An owned client cannot stop or
+  replace another live client's indicator. Manual CLI use without an owner can still stop control.
+  Client stop files contain `owner <identity>` and both C# gates honor only the matching owner, so
+  a late shutdown cannot stop a newly acquired desktop session.
+- **Key release is cleanup.** `gated` can be a predicate of arguments. Both front ends use
+  `commandIsGated`; `key <name> up` remains possible after the indicator or human stop closes the gate.
+- **Broker files are published atomically.** Temporary `.tmp` files are never requests. Backend
+  `ERROR` lines from broker responses must become `ToolError`, not a successful input result.
+- **MCP cancellation must settle work.** Cancelled queued calls never start, active calls close the
+  input gate and stop the warm host, and stdin closure or termination stops the owned indicator.
+  Host shutdown rejects both startup and pending calls so a dead process cannot poison the queue.
 
 ## Environment notes
 
@@ -195,3 +222,8 @@ bin\dsh-cu.cmd <command>     # the same CLI through a shim, no PATH change neede
   without that restriction.
 - Run `node src\cli.js self-test` on an unlocked interactive desktop. The isolated fixture must
   accept real input; an unavailable or interrupted desktop is a failure, not a passing check.
+- Self-test writes `report.json` in its own temp directory after each check. Preserve failed and
+  unfinished runs, numeric timing measurements and the tested-source fingerprint. Clipboard checks
+  read only the Windows sequence number; they never replace or export clipboard contents.
+- Use `docs/uitars-comparison-2026-10-18.md` and `docs/benchmark-protocol.md` when comparing against
+  UI-TARS. Keep Desktop and Agent TARS distinct; source findings do not establish task win rates.

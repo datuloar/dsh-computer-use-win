@@ -84,18 +84,34 @@ public static class UiTree
     public static string Search(AutomationElement window, string needle, bool json)
     {
         List<Node> matches = Matches(window, needle);
+        bool truncated = matches.Count > MatchCap;
+        if (truncated) matches.RemoveRange(MatchCap, matches.Count - MatchCap);
         if (json) return Json(matches);
         StringBuilder text = new StringBuilder();
         text.AppendLine("FOUND " + matches.Count + " for \"" + needle + "\" in " + Describe(window));
         for (int index = 0; index < matches.Count; index++) text.AppendLine(matches[index].Line().TrimStart());
+        if (truncated) text.AppendLine("... more matches exist; use a more specific name");
         return text.ToString().TrimEnd();
     }
 
     public static Node Only(AutomationElement window, string needle)
     {
+        Node node = Select(window, needle, false);
+        if (!node.Enabled) throw new InvalidOperationException("the named control is disabled; wait for it to become enabled");
+        return node;
+    }
+
+    public static Node Optional(AutomationElement window, string needle)
+    {
+        return Select(window, needle, true);
+    }
+
+    private static Node Select(AutomationElement window, string needle, bool optional)
+    {
         List<Node> matches = Matches(window, needle);
         if (matches.Count == 0)
         {
+            if (optional) return null;
             throw new InvalidOperationException(
                 "no control in " + Describe(window) + " is named like \"" + needle + "\"");
         }
@@ -105,10 +121,16 @@ public static class UiTree
             if (string.Equals(matches[index].Name, needle, StringComparison.OrdinalIgnoreCase)) exact.Add(matches[index]);
         }
         List<Node> shortlist = exact.Count > 0 ? exact : matches;
+        List<Node> enabled = new List<Node>();
+        for (int index = 0; index < shortlist.Count; index++)
+        {
+            if (shortlist[index].Enabled) enabled.Add(shortlist[index]);
+        }
+        if (enabled.Count > 0) shortlist = enabled;
         if (shortlist.Count > 1)
         {
             StringBuilder text = new StringBuilder();
-            text.Append(shortlist.Count + " controls match \"" + needle + "\", so nothing was clicked:");
+            text.Append(shortlist.Count + " controls match \"" + needle + "\", so no control was selected:");
             for (int index = 0; index < shortlist.Count && index < 6; index++)
             {
                 text.Append("\n  " + shortlist[index].Line().TrimStart());
@@ -122,7 +144,7 @@ public static class UiTree
     public static void EnsureVisibleAt(AutomationElement window, int x, int y)
     {
         IntPtr target = Handle(window);
-        if (target == IntPtr.Zero) return;
+        if (target == IntPtr.Zero) throw new InvalidOperationException("the target window disappeared; read it again before clicking");
         POINT point = new POINT();
         point.X = x;
         point.Y = y;
@@ -149,12 +171,13 @@ public static class UiTree
     private static List<Node> Matches(AutomationElement window, string needle)
     {
         string wanted = needle.ToLowerInvariant();
-        List<Node> nodes = Collect(window, SearchDepth, false, NodeCap * 4);
+        List<Node> nodes = Collect(window, SearchDepth, false, NodeCap * 4 + 1);
+        if (nodes.Count > NodeCap * 4)
+            throw new InvalidOperationException("the window has too many controls to confirm a unique match; use a fresh tree and coordinates");
         List<Node> matches = new List<Node>();
-        for (int index = 0; index < nodes.Count && matches.Count < MatchCap; index++)
+        for (int index = 0; index < nodes.Count; index++)
         {
             Node node = nodes[index];
-            if (!node.Enabled) continue;
             if (node.Name.ToLowerInvariant().Contains(wanted) || node.Id.ToLowerInvariant().Contains(wanted))
             {
                 matches.Add(node);
@@ -210,6 +233,7 @@ public static class UiTree
             if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0) return null;
             if ((bool)element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty)) return null;
             Node node = new Node();
+            node.Element = element;
             node.Depth = depth;
             node.Name = Text(element.GetCachedPropertyValue(AutomationElement.NameProperty));
             node.Id = Text(element.GetCachedPropertyValue(AutomationElement.AutomationIdProperty));
@@ -349,6 +373,7 @@ public static class UiTree
 
     public sealed class Node
     {
+        public AutomationElement Element;
         public int Depth;
         public string Role;
         public string Name;

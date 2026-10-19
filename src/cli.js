@@ -9,7 +9,7 @@ import {
   ps,
   requireIndicator,
 } from './backend.js';
-import { findCommand, renderHelp } from './commands.js';
+import { commandIsGated, findCommand, renderHelp } from './commands.js';
 import { ToolError } from './tool-error.js';
 
 const HELP_FLAGS = ['help', '--help', '-h'];
@@ -51,7 +51,7 @@ async function main(argv) {
     if (!isWindows) refuseOffWindows();
     if (!existsSync(backendScript)) fail(`backend missing: ${backendScript}`);
   }
-  if (command.gated) requireIndicator();
+  if (commandIsGated(command, args)) requireIndicator();
 
   await command.run(args);
 }

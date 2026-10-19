@@ -3,3 +3,5 @@ node_modules/
 .shot.png
 shots/*.png
 .playwright-mcp/
+
+dist/

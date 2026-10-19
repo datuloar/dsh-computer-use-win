@@ -21,9 +21,9 @@ import {
 } from './backend.js';
 import { ToolError } from './tool-error.js';
 import { describeImage, ensureVision, validateVisionQuestion } from './vision.js';
+import { DEFAULT_ANNOUNCE_SECONDS, parseAnnounceSeconds } from './settings.js';
+import { waitForControl } from './control-wait.js';
 
-const DEFAULT_ANNOUNCE_SECONDS = 8;
-const MAX_ANNOUNCE_SECONDS = 30;
 const MIN_SCREENSHOT_BYTES = 1024;
 const MIN_REGION_BYTES = 120;
 const MAX_COORDINATE = 32767;
@@ -39,7 +39,9 @@ const BROKER_ACTIONS = ['start', 'stop', 'status'];
 function integer(value, name) {
   if (value === undefined) throw new ToolError(`${name} is required`);
   if (!/^-?\d+$/.test(String(value).trim())) throw new ToolError(`${name} must be an integer, got "${value}"`);
-  return Number.parseInt(value, 10);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) throw new ToolError(`${name} must be a safe integer`);
+  return number;
 }
 
 function coordinate(value, name) {
@@ -184,6 +186,7 @@ export function parseWindowArgs(args) {
     }
     if (argument === '--pid') {
       pid = integer(args[++index], 'pid');
+      if (pid <= 0 || pid > 2147483647) throw new ToolError('pid must be between 1 and 2147483647');
       continue;
     }
     if (argument === '--title') {
@@ -205,6 +208,47 @@ function windowFlags(options) {
     ...(options.pid === null || options.pid === undefined ? [] : ['-TargetPid', String(options.pid)]),
     ...(options.title ? ['-TargetTitle', options.title] : []),
   ];
+}
+
+export function parseControlArgs(args, waiting = false) {
+  const rest = [];
+  let maxChars = 1000;
+  let seconds = 10;
+  let state = 'enabled';
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index];
+    if (flag === '--max-chars' && !waiting) {
+      maxChars = integer(args[++index], 'max chars');
+      if (maxChars < 1 || maxChars > 2000) throw new ToolError('max chars must be between 1 and 2000');
+    } else if (flag === '--seconds' && waiting) {
+      const value = args[++index];
+      seconds = value === undefined || !value.trim() ? Number.NaN : Number(value);
+      if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 30)
+        throw new ToolError('conditional wait seconds must be greater than 0 and at most 30');
+    } else if (flag === '--state' && waiting) {
+      state = oneOf(args[++index], ['exists', 'enabled'], 'control state');
+    } else rest.push(flag);
+  }
+  const options = parseWindowArgs(rest);
+  if (options.all || options.json || options.depth !== null)
+    throw new ToolError('control inspection takes a name, window target and documented control flags only');
+  return { ...options, needle: required(options.rest.join(' '), 'the name of the control'), maxChars, seconds, state };
+}
+
+async function runInspect(args) {
+  const options = parseControlArgs(args);
+  console.log(await ps(['inspect', options.needle, ...windowFlags(options), '-MaxChars', String(options.maxChars)]));
+}
+
+async function runWaitControl(args, { signal } = {}) {
+  const options = parseControlArgs(args, true);
+  const result = await waitForControl({
+    seconds: options.seconds,
+    state: options.state,
+    signal,
+    observe: async (timeout) => JSON.parse(await ps(['inspect', options.needle, ...windowFlags(options), '-MaxChars', '1000'], timeout)),
+  });
+  console.log(JSON.stringify(result));
 }
 
 async function runRead(args) {
@@ -257,6 +301,8 @@ async function runWheel(args) {
   const horizontal = args.includes('--horizontal');
   const position = args.filter((argument) => argument !== '--horizontal');
   const delta = integer(position[0], 'delta');
+  if (delta < -2147483648 || delta > 2147483647) throw new ToolError('wheel delta exceeds a Windows signed integer');
+  if (![1, 3].includes(position.length)) throw new ToolError('wheel needs a delta and either both x and y, or neither');
   if (delta === 0) throw new ToolError('wheel delta must not be zero');
   const [x, y] = position.slice(1);
   const target = x === undefined ? [] : [String(coordinate(x, 'x')), String(coordinate(y, 'y'))];
@@ -324,16 +370,13 @@ async function runRun(args) {
   console.log(await input(['run', required(args.join(' '), 'a command line')], SLOW_BACKEND_TIMEOUT_MS));
 }
 
-export function parseOverlayFlags(args) {
+export function parseOverlayFlags(args, environment = process.env) {
   const flags = new Set();
-  let announce = DEFAULT_ANNOUNCE_SECONDS;
+  let announce;
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument === '--announce') {
-      announce = integer(args[++index], 'announce seconds');
-      if (announce < 0 || announce > MAX_ANNOUNCE_SECONDS) {
-        throw new ToolError(`announce seconds must be between 0 and ${MAX_ANNOUNCE_SECONDS}`);
-      }
+      announce = parseAnnounceSeconds(integer(args[++index], 'announce seconds'));
       continue;
     }
     if (!START_FLAGS.includes(argument) && !(argument in ONE_SHOT_FLAGS)) {
@@ -348,7 +391,8 @@ export function parseOverlayFlags(args) {
     throw new ToolError(`${startFlags[0]} only applies while starting the indicator`);
   }
   return {
-    announce,
+    announce: announce ?? (oneShotFlags.length ? DEFAULT_ANNOUNCE_SECONDS
+      : parseAnnounceSeconds(environment.DSH_CU_ANNOUNCE_SECONDS, 'DSH_CU_ANNOUNCE_SECONDS')),
     quiet: flags.has('--quiet'),
     hideCursor: flags.has('--hide-cursor'),
     oneShot: oneShotFlags.length === 1 ? ONE_SHOT_FLAGS[oneShotFlags[0]] : null,
@@ -494,6 +538,18 @@ export const COMMANDS = [
     run: runTap,
   },
   {
+    name: 'inspect',
+    args: '<text> [--pid N | --title <text>] [--max-chars N]',
+    summary: 'read one unique control value and state as JSON; protected values stay hidden',
+    run: runInspect,
+  },
+  {
+    name: 'wait-control',
+    args: '<text> [--pid N | --title <text>] [--seconds N] [--state exists|enabled]',
+    summary: 'wait for one named control with bounded polling; no input or focus change',
+    run: runWaitControl,
+  },
+  {
     name: 'move',
     args: '<x> <y>',
     summary: 'move the pointer',
@@ -532,7 +588,7 @@ export const COMMANDS = [
     name: 'key',
     args: '<name> [down|up]',
     summary: 'Enter, Esc, Tab, Space, Ctrl, Alt, F1..F12, arrows',
-    gated: true,
+    gated: (args) => args[1] !== 'up',
     run: runKey,
   },
   {
@@ -609,7 +665,7 @@ export const COMMANDS = [
   {
     name: 'mcp',
     args: '',
-    summary: 'serve every command as MCP tools over stdio (DeepSeek Harness, Claude Code, opencode, ...)',
+    summary: 'serve every command as MCP tools over stdio (DeepSeek Harness, Claude Code, Cursor, ...)',
     run: runMcp,
   },
   {
@@ -622,7 +678,7 @@ export const COMMANDS = [
   {
     name: 'self-test',
     args: '',
-    summary: 'exercise every command, report pass/fail',
+    summary: 'test isolated Windows/MCP scenarios, save a JSON report',
     windowsOnly: false,
     run: runSelfTest,
   },
@@ -650,4 +706,8 @@ export function findCommand(name) {
   const command = COMMANDS.find((entry) => entry.name === name);
   if (!command) throw new ToolError(`unknown command "${name}" — run dsh-cu --help`);
   return command;
+}
+
+export function commandIsGated(command, args) {
+  return typeof command.gated === 'function' ? command.gated(args) : Boolean(command.gated);
 }

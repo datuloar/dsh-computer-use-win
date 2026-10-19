@@ -26,7 +26,7 @@ shell. Everything in this skill applies to both.
 
 ## The loop — text first, pixels last
 
-1. `dsh-cu overlay` — the human gets an 8 s countdown and ESC cancels. Every input command refuses
+1. `dsh-cu overlay` — the human gets a 5 s countdown by default and ESC cancels. Every input command refuses
    to run until the indicator is up, and refuses again the moment it dies.
 2. `dsh-cu focus --title "part of the title"` (or `focus <pid>`) the target window.
 3. Read it as text, cheapest first:
@@ -56,6 +56,13 @@ Keep every answer small: the harness trims tool output past ~4 KB from the middl
 120 controls and says so; when it does, ask `find "<word>"` or lower `--depth` instead of reading
 the whole window again. `read` a region, not the screen.
 
+For an accessible field, `dsh-cu inspect "Field" --pid N` returns JSON with its value and state.
+Use the value as exact evidence only when `valueStatus` is `available` and `truncated` is false.
+The default limit is 1000 characters, configurable up to 2000 with `--max-chars`. Whitespace is
+preserved and password values stay hidden. `dsh-cu wait-control "Save" --pid N --seconds 5`
+waits for a unique enabled control without focus or input; `--state exists` also accepts disabled
+controls. A fresh tap still checks coverage. Plain delays do not prove readiness.
+
 ## Commands
 
     dsh-cu shot [file.png] [--region <x> <y> <w> <h>]   capture the screen, or a crop of it
@@ -63,6 +70,8 @@ the whole window again. `read` a region, not the screen.
     dsh-cu tree [--pid N | --title <text>] [--depth N] [--all] [--json]   the control tree of a window
     dsh-cu find <text> [--pid N | --title <text>] [--json]   controls whose name contains the text
     dsh-cu tap <text> [--pid N | --title <text>]   click the one control named like that
+    dsh-cu inspect <text> [--pid N | --title <text>] [--max-chars N]   one control value/state as JSON
+    dsh-cu wait-control <text> [--pid N | --title <text>] [--seconds N] [--state exists|enabled]   bounded read-only wait
     dsh-cu move <x> <y>                       move the pointer
     dsh-cu click <x> <y> [left|right|middle|double|triple]   click
     dsh-cu drag <x> <y> <to-x> <to-y>         press, glide to the second point, release
@@ -82,7 +91,7 @@ the whole window again. `read` a region, not the screen.
     dsh-cu display                            primary screen size and DPI
     dsh-cu mcp                                serve the same tools over MCP (stdio)
     dsh-cu doctor                             what this machine can do
-    dsh-cu self-test                          exercise every command
+    dsh-cu self-test                          test Windows/MCP; save report.json
     dsh-cu overlay --stop                     stop the indicator and clean up
     dsh-cu overlay --restore-cursor           emergency cursor restore
 
@@ -109,6 +118,9 @@ has a browser MCP (Playwright), prefer it for heavy web work — it reads the DO
 
 - `type` preserves leading/trailing whitespace, sends a newline as Enter and a tab as Tab, and
   checks the indicator before input events so the human can stop a long text with ESC.
+- If typing stops with an error, some text may already have been entered. Inspect the field
+  before retrying; never replay the whole text blindly. MCP typing is limited to 2000 characters
+  per call.
 - The wheel goes to the window under the pointer: `dsh-cu wheel -600 1280 700` is five notches
   down at that point. Scrolling moves every coordinate — read again before the next click.
 - `dsh-cu drag 420 300 980 300` for sliders, selections and drag-and-drop.

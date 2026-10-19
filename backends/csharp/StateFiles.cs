@@ -13,6 +13,8 @@ public static class StateFiles
 
     public static readonly string Pid = InTemp("dsh-cu.pid");
 
+    public static readonly string Owner = InTemp("dsh-cu.owner");
+
     public static readonly string CursorHidden = InTemp("dsh-cu.cursor");
 
     public static readonly string Action = InTemp("dsh-cu.action");
@@ -66,9 +68,19 @@ public static class StateFiles
         return (DateTime.UtcNow - new DateTime(stamp, DateTimeKind.Utc)).TotalSeconds;
     }
 
+    public static bool StopRequested()
+    {
+        string request = Read(Stop);
+        if (request.Length == 0) return false;
+        return !request.StartsWith("owner ", StringComparison.Ordinal) || request.Substring(6) == Read(Owner);
+    }
+
     public static void RequireInput()
     {
         if (Environment.GetEnvironmentVariable("DSH_CU_ALLOW_NO_INDICATOR") == "1") return;
+        string client = Environment.GetEnvironmentVariable("DSH_CU_OWNER");
+        if (!string.IsNullOrEmpty(client) && Read(Owner) != client)
+            throw new InvalidOperationException("another computer-use client owns the desktop; wait for it to stop");
         string owner = Read(Pid);
         string[] fields = owner.Split(' ');
         int pid;
@@ -86,7 +98,7 @@ public static class StateFiles
             }
             catch { }
         }
-        if (!alive || AgeSeconds(Heartbeat) >= 5 || System.IO.File.Exists(Stop) || AgeSeconds(HumanStop) < 600)
+        if (!alive || AgeSeconds(Heartbeat) >= 5 || StopRequested() || AgeSeconds(HumanStop) < 600)
             throw new InvalidOperationException("the on-screen indicator is not running or the human stopped control");
         if (Read(Ready) != owner)
             throw new InvalidOperationException("the on-screen countdown is still running; wait for the announcement to finish");
